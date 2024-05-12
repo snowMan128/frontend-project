@@ -96,7 +96,7 @@ jobs:
           yarn run test:ci ${{ steps.cpu-info.outputs.cores-count }}
 
       - name: "Upload e2e output" 
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: ${{ failure() }}
         with:
           name: e2e output
@@ -109,7 +109,7 @@ jobs:
           yarn coverage:merge 
 
       - name: Upload coverage to Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: ${{ success() }}
         with:
           name: e2e-tests-coverage
@@ -123,7 +123,7 @@ jobs:
       #     token: ${{ secrets.CODECOV_TOKEN }}
 
       #- name: Upload coverage to artifact
-        #uses: actions/upload-artifact@v3
+        #uses: actions/upload-artifact@v4
         #with:
           #name: e2e-tests-coverage
           #path: coverage/
