@@ -140,7 +140,7 @@
     "date-fns": "^2.20.1",
     "dotenv-defaults": "^2.0.2",
     "dotenv-webpack": "^7.0.2",
-    "emoji-regex": "^7.0.3",
+    "emoji-regex": "^10.3.0",
     "enzyme": "^3.11.0",
     "enzyme-to-json": "^3.5.0",
     "eslint": "^8.28.0",
