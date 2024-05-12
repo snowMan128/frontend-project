@@ -1,6 +1,6 @@
-import { getEnv, types } from "mobx-state-tree";
-import { cloneNode, restoreNewsnapshot } from "../core/Helpers";
-import { AnnotationMixin } from "./AnnotationMixin";
+import { getEnv, getRoot, types } from 'mobx-state-tree';
+import { cloneNode, restoreNewsnapshot } from '../core/Helpers';
+import { AnnotationMixin } from './AnnotationMixin';
 
 const ToolMixin = types
   .model({
@@ -10,7 +10,7 @@ const ToolMixin = types
   })
   .views(self => ({
     get obj() {
-      return self.manager?.obj;
+      return self.manager?.obj ?? getEnv(self).object;
     },
 
     get manager() {
@@ -23,6 +23,10 @@ const ToolMixin = types
 
     get viewClass() {
       return () => null;
+    },
+
+    get fullName() {
+      return self.toolName + (self.dynamic ? '-dynamic' : '');
     },
 
     get clonedStates() {
@@ -55,19 +59,39 @@ const ToolMixin = types
     get extraShortcuts() {
       return {};
     },
+
+    get shouldPreserveSelectedState() {
+      if (!self.obj) return false;
+
+      const settings = getRoot(self.obj).settings;
+
+      return settings.preserveSelectedTool;
+    },
+
+    get isPreserved() {
+      return window.localStorage.getItem(`selected-tool:${self.obj?.name}`) === self.fullName;
+    },
   }))
   .actions(self => ({
-    setSelected(val) {
-      self.selected = val;
+    setSelected(selected) {
+      self.selected = selected;
       self.afterUpdateSelected();
+
+      if (selected && self.obj) {
+        const storeName = `selected-tool:${self.obj.name}`;
+
+        if (self.shouldPreserveSelectedState) {
+          window.localStorage.setItem(storeName, self.fullName);
+        }
+      }
     },
 
     afterUpdateSelected() {},
 
     event(name, ev, args) {
-      const fn = name + "Ev";
+      const fn = name + 'Ev';
 
-      if (typeof self[fn] !== "undefined") self[fn].call(self, ev, args);
+      if (typeof self[fn] !== 'undefined') self[fn].call(self, ev, args);
     },
 
     createFromJSON(obj, fromModel) {
@@ -80,7 +104,7 @@ const ToolMixin = types
 
       // workaround to prevent perregion textarea from duplicating
       // during deserialisation
-      if (fm.perregion && fromModel.type === "textarea") return;
+      if (fm.perregion && fromModel.type === 'textarea') return;
 
       const { stateTypes, controlTagTypes } = self.tagTypes;
 
@@ -100,10 +124,10 @@ const ToolMixin = types
         const moreParams = self.moreRegionParams?.(obj) ?? obj;
         const data = {
           pid: obj.id,
-          parentID: obj.parent_id === null ? "" : obj.parent_id,
+          parentID: obj.parent_id === null ? '' : obj.parent_id,
           score: obj.score,
           readonly: obj.readonly,
-          coordstype: "perc",
+          coordstype: 'perc',
           states,
           ...params,
           ...obj.value,
