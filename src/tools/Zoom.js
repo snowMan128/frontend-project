@@ -69,6 +69,9 @@ const _Tool = types
     // image: types.late(() => types.safeReference(Registry.getModelByTag("image")))
     group: 'control',
   })
+  .volatile(() => ({
+    canInteractWithRegions: false,
+  }))
   .views(self => ({
     get viewClass() {
       return () => <ToolView item={self} />;
@@ -89,7 +92,7 @@ const _Tool = types
     },
 
     updateCursor() {
-      if (!self.selected || !self.obj.stageRef) return;
+      if (!self.selected || !self.obj?.stageRef) return;
 
       self.stageContainer.style.cursor = 'grab';
     },

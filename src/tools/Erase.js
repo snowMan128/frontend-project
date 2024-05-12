@@ -55,6 +55,7 @@ const _Tool = types
   })
   .volatile(() => ({
     index: 9999,
+    canInteractWithRegions: false,
   }))
   .views(self => ({
     get viewClass() {
@@ -96,7 +97,7 @@ const _Tool = types
 
     return {
       updateCursor() {
-        if (!self.selected || !self.obj.stageRef) return;
+        if (!self.selected || !self.obj?.stageRef) return;
         const val = 24;
         const stage = self.obj.stageRef;
         const base64 = Canvas.brushSizeCircle(val);

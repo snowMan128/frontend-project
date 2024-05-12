@@ -15,12 +15,13 @@ export const Actions = ({ store }) => {
   const isViewAll = annotationStore.viewingAll;
 
   const onToggleVisibility = useCallback(() => {
+    !isViewAll && entity.saveDraftImmediatelyWithResults({ useToast: true });
     annotationStore.toggleViewingAllAnnotations();
   }, [annotationStore]);
 
   return (
     <Elem name="section">
-      {store.hasInterface('annotations:view-all')  && (
+      {store.hasInterface('annotations:view-all') && (
         <Tooltip title="View all annotations">
           <Button
             icon={<IconViewAll />}

@@ -1,6 +1,5 @@
 const { I } = inject();
 const Helpers = require('../tests/helpers');
-const Asserts = require('../utils/asserts');
 
 module.exports = {
   init({ events = {}, ...params }) {
@@ -34,8 +33,8 @@ module.exports = {
     I.executeScript(Helpers.clearModalIfPresent);
   },
 
-  waitForObjectsReady() {
-    I.executeScript(Helpers.waitForObjectsReady);
+  async waitForObjectsReady() {
+    await I.executeScript(Helpers.waitForObjectsReady);
   },
 
   async resultsNotChanged(result, fractionDigits = 2) {

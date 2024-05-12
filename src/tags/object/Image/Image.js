@@ -1,1146 +1,600 @@
-import { inject } from 'mobx-react';
-import { destroy, getRoot, getType, types } from 'mobx-state-tree';
+import CursorPlugin from 'wavesurfer.js/dist/plugin/wavesurfer.cursor';
+import React from 'react';
+import throttle from 'lodash.throttle';
+import { ZoomInOutlined, ZoomOutOutlined } from '@ant-design/icons';
+import RegionsPlugin from 'wavesurfer.js/dist/plugin/wavesurfer.regions.min.js';
+import TimelinePlugin from 'wavesurfer.js/dist/plugin/wavesurfer.timeline.min.js';
+import WaveSurfer from 'wavesurfer.js';
+import styles from './Waveform.module.scss';
+import globalStyles from '../../styles/global.module.scss';
+import { Col, Row, Select, Slider } from 'antd';
+import { SoundOutlined } from '@ant-design/icons';
+import defaultMessages from '../../utils/messages';
+import { Hotkey } from '../../core/Hotkey';
+import { Tooltip } from '../../common/Tooltip/Tooltip';
 
-import ImageView from '../../../components/ImageView/ImageView';
-import { customTypes } from '../../../core/CustomTypes';
-import Registry from '../../../core/Registry';
-import { AnnotationMixin } from '../../../mixins/AnnotationMixin';
-import { IsReadyWithDepsMixin } from '../../../mixins/IsReadyMixin';
-import { BrushRegionModel } from '../../../regions/BrushRegion';
-import { EllipseRegionModel } from '../../../regions/EllipseRegion';
-import { KeyPointRegionModel } from '../../../regions/KeyPointRegion';
-import { PolygonRegionModel } from '../../../regions/PolygonRegion';
-import { RectRegionModel } from '../../../regions/RectRegion';
-import * as Tools from '../../../tools';
-import ToolsManager from '../../../tools/Manager';
-import { parseValue } from '../../../utils/data';
-import { FF_DEV_3377, FF_DEV_3666, FF_DEV_3793, FF_DEV_4081, FF_LSDV_4583, isFF } from '../../../utils/feature-flags';
-import { guidGenerator } from '../../../utils/unique';
-import { clamp, isDefined } from '../../../utils/utilities';
-import ObjectBase from '../Base';
-import { DrawingRegion } from './DrawingRegion';
-import { ImageEntityMixin } from './ImageEntityMixin';
-import { ImageSelection } from './ImageSelection';
+const MIN_ZOOM_Y = 1;
+const MAX_ZOOM_Y = 50;
 
-const IMAGE_PRELOAD_COUNT = 3;
+const MIN_ZOOM_Y = 1;
+const MAX_ZOOM_Y = 50;
 
 /**
- * The `Image` tag shows an image on the page. Use for all image annotation tasks to display an image on the labeling interface.
+ * Use formatTimeCallback to style the notch labels as you wish, such
+ * as with more detail as the number of pixels per second increases.
  *
- * Use with the following data types: images.
+ * Here we format as M:SS.frac, with M suppressed for times < 1 minute,
+ * and frac having 0, 1, or 2 digits as the zoom increases.
  *
- * When you annotate image regions with this tag, the annotations are saved as percentages of the original size of the image, from 0-100.
- * @example
- * <!--Labeling configuration to display an image on the labeling interface-->
- * <View>
- *   <!-- Retrieve the image url from the url field in JSON or column in CSV -->
- *   <Image name="image" value="$url" rotateControl="true" zoomControl="true"></Image>
- * </View>
- *  * @example
- * <!--Labeling configuration to perform multi-image segmentation-->
+ * Note that if you override the default function, you'll almost
+ * certainly want to override timeInterval, primaryLabelInterval and/or
+ * secondaryLabelInterval so they all work together.
  *
- * Config:
- * ```xml
- * <View>
- *   <!-- Retrieve the image url from the url field in JSON or column in CSV -->
- *   <Image name="image" valueList="$images" rotateControl="true" zoomControl="true"></Image>
- * </View>
- * ```
- *
- * Data:
- * ```json
- * {
- *   "data": {
- *     "images": [
- *       "https://images.unsplash.com/photo-1556740734-7f3a7d7f0f9c?ixlib=rb-1.2.1&ixid=eyJhcHBfaWQiOjEyMDd9&auto=format&fit=crop&w=1950&q=80",
- *       "https://images.unsplash.com/photo-1556740734-7f3a7d7f0f9c?ixlib=rb-1.2.1&ixid=eyJhcHBfaWQiOjEyMDd9&auto=format&fit=crop&w=1950&q=80",
- *     ]
- *   }
- * }
- * ```
- * @name Image
- * @meta_title Image Tags for Images
- * @meta_description Customize Label Studio with the Image tag to annotate images for computer vision machine learning and data science projects.
- * @param {string} name                       - Name of the element
- * @param {string} value                      - Data field containing a path or URL to the image
- * @param {boolean} [smoothing]               - Enable smoothing, by default it uses user settings
- * @param {string=} [width=100%]              - Image width
- * @param {string=} [maxWidth=750px]          - Maximum image width
- * @param {boolean=} [zoom=false]             - Enable zooming an image with the mouse wheel
- * @param {boolean=} [negativeZoom=false]     - Enable zooming out an image
- * @param {float=} [zoomBy=1.1]               - Scale factor
- * @param {boolean=} [grid=false]             - Whether to show a grid
- * @param {number=} [gridSize=30]             - Specify size of the grid
- * @param {string=} [gridColor="#EEEEF4"]     - Color of the grid in hex, opacity is 0.15
- * @param {boolean} [zoomControl=false]       - Show zoom controls in toolbar
- * @param {boolean} [brightnessControl=false] - Show brightness control in toolbar
- * @param {boolean} [contrastControl=false]   - Show contrast control in toolbar
- * @param {boolean} [rotateControl=false]     - Show rotate control in toolbar
- * @param {boolean} [crosshair=false]         - Show crosshair cursor
- * @param {string} [horizontalAlignment="left"] - Where to align image horizontally. Can be one of "left", "center" or "right"
- * @param {string} [verticalAlignment="top"]    - Where to align image vertically. Can be one of "top", "center" or "bottom"
- * @param {string} [defaultZoom="fit"]          - Specify the initial zoom of the image within the viewport while preserving it’s ratio. Can be one of "auto", "original" or "fit"
- * @param {string} [valuelist]                  - References a variable that holds a list of image URLs
- * @param {string} [crossOrigin="none"]         - Configures CORS cross domain behavior for this image, either "none", "anonymous", or "use-credentials", similar to [DOM `img` crossOrigin property](https://developer.mozilla.org/en-US/docs/Web/API/HTMLImageElement/crossOrigin).
+ * @param: seconds
+ * @param: pxPerSec
  */
-const TagAttrs = types.model({
-  value: types.maybeNull(types.string),
-  valuelist: types.maybeNull(types.string),
-  resize: types.maybeNull(types.number),
-  width: types.optional(types.string, '100%'),
-  height: types.maybeNull(types.string),
-  maxwidth: types.optional(types.string, '100%'),
-  maxheight: types.optional(types.string, 'calc(100vh - 194px)'),
-  smoothing: types.maybeNull(types.boolean),
+function formatTimeCallback(seconds, pxPerSec) {
+  seconds = Number(seconds);
+  const minutes = Math.floor(seconds / 60);
 
-  // rulers: types.optional(types.boolean, true),
-  grid: types.optional(types.boolean, false),
-  gridsize: types.optional(types.string, '30'),
-  gridcolor: types.optional(customTypes.color, '#EEEEF4'),
+  seconds = seconds % 60;
 
-  zoom: types.optional(types.boolean, true),
-  negativezoom: types.optional(types.boolean, false),
-  zoomby: types.optional(types.string, '1.1'),
+  // fill up seconds with zeroes
+  let secondsStr = Math.round(seconds).toString();
 
-  showlabels: types.optional(types.boolean, false),
+  if (pxPerSec >= 25 * 10) {
+    secondsStr = seconds.toFixed(2);
+  } else if (pxPerSec >= 25 * 1) {
+    secondsStr = seconds.toFixed(1);
+  }
 
-  zoomcontrol: types.optional(types.boolean, true),
-  brightnesscontrol: types.optional(types.boolean, false),
-  contrastcontrol: types.optional(types.boolean, false),
-  rotatecontrol: types.optional(types.boolean, false),
-  crosshair: types.optional(types.boolean, false),
-  selectioncontrol: types.optional(types.boolean, true),
-
-  // this property is just to turn lazyload off to e2e tests
-  lazyoff: types.optional(types.boolean, false),
-
-  horizontalalignment: types.optional(types.enumeration(['left', 'center', 'right']), 'left'),
-  verticalalignment: types.optional(types.enumeration(['top', 'center', 'bottom']), 'top'),
-  defaultzoom: types.optional(types.enumeration(['auto', 'original', 'fit']), 'fit'),
-
-  crossorigin: types.optional(types.enumeration(['none', 'anonymous', 'use-credentials']), 'none'),
-});
-
-const IMAGE_CONSTANTS = {
-  rectangleModel: 'RectangleModel',
-  rectangleLabelsModel: 'RectangleLabelsModel',
-  ellipseModel: 'EllipseModel',
-  ellipseLabelsModel: 'EllipseLabelsModel',
-  brushLabelsModel: 'BrushLabelsModel',
-  rectanglelabels: 'rectanglelabels',
-  keypointlabels: 'keypointlabels',
-  polygonlabels: 'polygonlabels',
-  brushlabels: 'brushlabels',
-  brushModel: 'BrushModel',
-  ellipselabels: 'ellipselabels',
-};
-
-const Model = types.model({
-  type: 'image',
-
-  // tools: types.array(BaseTool),
-
-  sizeUpdated: types.optional(types.boolean, false),
-
-  /**
-   * Cursor coordinates
-   */
-  cursorPositionX: types.optional(types.number, 0),
-  cursorPositionY: types.optional(types.number, 0),
-
-  brushControl: types.optional(types.string, 'brush'),
-
-  brushStrokeWidth: types.optional(types.number, 15),
-
-  /**
-   * Mode
-   * brush for Image Segmentation
-   * eraser for Image Segmentation
-   */
-  mode: types.optional(types.enumeration(['drawing', 'viewing', 'brush', 'eraser']), 'viewing'),
-
-  regions: types.array(
-    types.union(BrushRegionModel, RectRegionModel, EllipseRegionModel, PolygonRegionModel, KeyPointRegionModel),
-    [],
-  ),
-
-  drawingRegion: types.optional(DrawingRegion, null),
-  selectionArea: types.optional(ImageSelection, { start: null, end: null }),
-}).volatile(() => ({
-  currentImage: undefined,
-  shouldReinitHistory: true,
-})).views(self => ({
-  get store() {
-    return getRoot(self);
-  },
-
-  get multiImage() {
-    return isFF(FF_LSDV_4583) && isDefined(self.valuelist);
-  },
-
-  get parsedValue() {
-    return parseValue(self.value, self.store.task.dataObj);
-  },
-
-  get parsedValueList() {
-    return parseValue(self.valuelist, self.store.task.dataObj);
-  },
-
-  get currentSrc() {
-    return self.currentImageEntity.src;
-  },
-
-  get usedValue() {
-    return self.multiImage ? self.valuelist : self.value;
-  },
-
-  get images() {
-    const value = self.parsedValue;
-
-    if (!value) return [];
-    if (Array.isArray(value)) return value;
-    return [value];
-  },
-
-  /**
-   * @return {boolean}
-   */
-  get hasStates() {
-    const states = self.states();
-
-    return states && states.length > 0;
-  },
-
-  get regs() {
-    const regions = self.annotation?.regionStore.regions.filter(r => r.object === self) || [];
-
-    if (isFF(FF_LSDV_4583) && self.valuelist) {
-      return regions.filter(r => (r.item_index ?? 0) === self.currentImage);
+  if (minutes > 0) {
+    if (seconds < 10) {
+      secondsStr = '0' + secondsStr;
     }
+    return `${minutes}:${secondsStr}`;
+  }
+  return secondsStr;
+}
 
-    return regions;
-  },
+/**
+ * Use timeInterval to set the period between notches, in seconds,
+ * adding notches as the number of pixels per second increases.
+ *
+ * Note that if you override the default function, you'll almost
+ * certainly want to override formatTimeCallback, primaryLabelInterval
+ * and/or secondaryLabelInterval so they all work together.
+ *
+ * @param: pxPerSec
+ */
+function timeInterval(pxPerSec) {
+  let retval = 1;
 
-  get selectedRegions() {
-    return self.regs.filter(region => region.inSelection);
-  },
+  if (pxPerSec >= 25 * 100) {
+    retval = 0.01;
+  } else if (pxPerSec >= 25 * 40) {
+    retval = 0.025;
+  } else if (pxPerSec >= 25 * 10) {
+    retval = 0.1;
+  } else if (pxPerSec >= 25 * 4) {
+    retval = 0.25;
+  } else if (pxPerSec >= 25) {
+    retval = 1;
+  } else if (pxPerSec * 5 >= 25) {
+    retval = 5;
+  } else if (pxPerSec * 15 >= 25) {
+    retval = 15;
+  } else {
+    retval = Math.ceil(0.5 / pxPerSec) * 60;
+  }
+  return retval;
+}
 
-  get selectedRegionsBBox() {
-    let bboxCoords;
+/**
+ * Return the cadence of notches that get labels in the primary color.
+ * EG, return 2 if every 2nd notch should be labeled,
+ * return 10 if every 10th notch should be labeled, etc.
+ *
+ * Note that if you override the default function, you'll almost
+ * certainly want to override formatTimeCallback, primaryLabelInterval
+ * and/or secondaryLabelInterval so they all work together.
+ *
+ * @param pxPerSec
+ */
+function primaryLabelInterval(pxPerSec) {
+  let retval = 1;
 
-    self.selectedRegions.forEach((region) => {
-      const regionBBox = region.bboxCoords;
+  if (pxPerSec >= 25 * 100) {
+    retval = 10;
+  } else if (pxPerSec >= 25 * 40) {
+    retval = 4;
+  } else if (pxPerSec >= 25 * 10) {
+    retval = 10;
+  } else if (pxPerSec >= 25 * 4) {
+    retval = 4;
+  } else if (pxPerSec >= 25) {
+    retval = 1;
+  } else if (pxPerSec * 5 >= 25) {
+    retval = 5;
+  } else if (pxPerSec * 15 >= 25) {
+    retval = 15;
+  } else {
+    retval = Math.ceil(0.5 / pxPerSec) * 60;
+  }
+  return retval;
+}
 
-      if (!regionBBox) return;
+/**
+ * Return the cadence of notches to get labels in the secondary color.
+ * EG, return 2 if every 2nd notch should be labeled,
+ * return 10 if every 10th notch should be labeled, etc.
+ *
+ * Secondary labels are drawn after primary labels, so if
+ * you want to have labels every 10 seconds and another color labels
+ * every 60 seconds, the 60 second labels should be the secondaries.
+ *
+ * Note that if you override the default function, you'll almost
+ * certainly want to override formatTimeCallback, primaryLabelInterval
+ * and/or secondaryLabelInterval so they all work together.
+ *
+ * @param pxPerSec
+ */
+function secondaryLabelInterval(pxPerSec) {
+  // draw one every 10s as an example
+  return Math.floor(10 / timeInterval(pxPerSec));
+}
 
-      if (bboxCoords) {
-        bboxCoords = {
-          left: Math.min(regionBBox?.left, bboxCoords.left),
-          top: Math.min(regionBBox?.top, bboxCoords.top),
-          right: Math.max(regionBBox?.right, bboxCoords.right),
-          bottom: Math.max(regionBBox?.bottom, bboxCoords.bottom),
-        };
-      } else {
-        bboxCoords = regionBBox;
-      }
-    });
-    return bboxCoords;
-  },
+export default class Waveform extends React.Component {
+  constructor(props) {
+    super(props);
 
-  get regionsInSelectionArea() {
-    return self.regs.filter(region => region.isInSelectionArea);
-  },
+    this.hotkeys = Hotkey('Audio', 'Audio Segmentation');
 
-  get selectedShape() {
-    return self.regs.find(r => r.selected);
-  },
-
-  get suggestions() {
-    return self.annotation?.regionStore.suggestions.filter(r => r.object === self) || [];
-  },
-
-  get useTransformer() {
-    return self.getToolsManager().findSelectedTool()?.useTransformer === true;
-  },
-
-  get stageTranslate() {
-    const {
-      stageWidth: width,
-      stageHeight: height,
-    } = self;
-
-    return {
-      0: { x: 0, y: 0 },
-      90: { x: 0, y: height },
-      180: { x: width, y: height },
-      270: { x: width, y: 0 },
-    }[self.rotation];
-  },
-
-  get stageScale() {
-    return self.zoomScale;
-  },
-
-  get hasTools() {
-    return !!self.getToolsManager().allTools()?.length;
-  },
-
-  get imageCrossOrigin() {
-    const value = self.crossorigin.toLowerCase();
-
-    if (!isFF(FF_DEV_4081)) {
-      return null;
-    } else if (!value || value === 'none') {
-      return null;
-    } else {
-      return value;
-    }
-  },
-
-  get fillerHeight() {
-    const { naturalWidth, naturalHeight } = self;
-
-    return self.isSideways
-      ? `${naturalWidth / naturalHeight * 100}%`
-      : `${naturalHeight / naturalWidth * 100}%`;
-  },
-
-  createSerializedResult(region, value) {
-    const index = region.item_index ?? 0;
-    const currentImageEntity = self.findImageEntity(index);
-
-    const imageDimension = {
-      original_width: currentImageEntity.naturalWidth,
-      original_height: currentImageEntity.naturalHeight,
-      image_rotation: currentImageEntity.rotation,
+    this.state = {
+      src: this.props.src,
+      pos: 0,
+      colors: {
+        waveColor: '#97A0AF',
+        progressColor: '#52c41a',
+      },
+      zoom: 0,
+      zoomY: MIN_ZOOM_Y,
+      speed: 1,
+      volume: props.muted ? 0 : 1,
     };
-
-    if (self.multiImage && isDefined(index)) {
-      imageDimension.item_index = index;
-    }
-
-    // We're using raw region result instead of calulated one when
-    // the image data is not available (image is not yet loaded)
-    // As the serialization also happens during region creation,
-    // we have to forsee this scenario and avoid using raw result
-    // as it can only be present for already created (submitter) regions
-    const useRawResult = !currentImageEntity.imageLoaded && isDefined(region._rawResult);
-
-    return useRawResult ? structuredClone(region._rawResult) : {
-      ...imageDimension,
-      value,
-    };
-  },
+  }
 
   /**
-   * @return {object}
+   * Handle to change zoom of wave
    */
-  states() {
-    return self.annotation.toNames.get(self.name);
-  },
-
-  activeStates() {
-    const states = self.states();
-
-    return states && states.filter(s => s.isSelected && s.type.includes('labels'));
-  },
-
-  controlButton() {
-    const names = self.states();
-
-    if (!names || names.length === 0) return;
-
-    let returnedControl = names[0];
-
-    names.forEach(item => {
-      if (
-        item.type === IMAGE_CONSTANTS.rectanglelabels ||
-        item.type === IMAGE_CONSTANTS.brushlabels ||
-        item.type === IMAGE_CONSTANTS.ellipselabels
-      ) {
-        returnedControl = item;
-      }
+  onChangeZoom = value => {
+    this.setState({
+      ...this.state,
+      zoom: value,
     });
 
-    return returnedControl;
-  },
+    this.wavesurfer.zoom(value);
+  };
 
-  get controlButtonType() {
-    const name = self.controlButton();
+  onChangeZoomY = value => {
 
-    return getType(name).name;
-  },
+    this.setState({
+      ...this.state,
+      zoomY: value,
+    }, this.updateZoomY);
+  };
 
-  get isSideways() {
-    return (self.rotation + 360) % 180 === 90;
-  },
+  updateZoomY = throttle(() => {
+    this.wavesurfer.params.barHeight = this.state.zoomY;
+    this.wavesurfer.drawBuffer();
 
-  get stageComponentSize() {
-    if (self.isSideways) {
-      return {
-        width: self.stageHeight,
-        height: self.stageWidth,
-      };
-    }
-    return {
-      width: self.stageWidth,
-      height: self.stageHeight,
-    };
-  },
+  onChangeVolume = value => {
+    this.setState({
+      ...this.state,
+      volume: value,
+    });
 
-  get canvasSize() {
-    if (self.isSideways) {
-      return {
-        width: isFF(FF_DEV_3377)
-          ? self.naturalHeight * self.stageZoomX
-          : Math.round(self.naturalHeight * self.stageZoomX),
-        height: isFF(FF_DEV_3377)
-          ? self.naturalWidth * self.stageZoomY
-          : Math.round(self.naturalWidth * self.stageZoomY),
-      };
-    }
+    this.wavesurfer.setVolume(value);
+  };
 
-    return {
-      width: isFF(FF_DEV_3377)
-        ? self.naturalWidth * self.stageZoomX
-        : Math.round(self.naturalWidth * self.stageZoomX),
-      height: isFF(FF_DEV_3377)
-        ? self.naturalHeight * self.stageZoomY
-        : Math.round(self.naturalHeight * self.stageZoomY),
-    };
-  },
+  /**
+   * Handle to change speed of wave
+   */
+  onChangeSpeed = value => {
+    this.setState({
+      ...this.state,
+      speed: value,
+    });
 
-  get zoomBy() {
-    return parseFloat(self.zoomby);
-  },
-  get isDrawing() {
-    return !!self.drawingRegion;
-  },
+    this.wavesurfer.setPlaybackRate(value);
+  };
 
-  get imageTransform() {
-    const imgStyle = {
-      // scale transform leaves gaps on image border, so much better to change image sizes
-      width: `${self.stageWidth * self.zoomScale}px`,
-      height: `${self.stageHeight * self.zoomScale}px`,
-      transformOrigin: 'left top',
-      // We should always set some transform to make the image rendering in the same way all the time
-      transform: 'translate3d(0,0,0)',
-      filter: `brightness(${self.brightnessGrade}%) contrast(${self.contrastGrade}%)`,
-    };
-    const imgTransform = [];
+  onZoomPlus = (ev, step = 10) => {
+    let val = this.state.zoom;
 
-    if (self.zoomScale !== 1) {
-      const { zoomingPositionX = 0, zoomingPositionY = 0 } = self;
+    val = val + step;
+    if (val > 700) val = 700;
 
-      imgTransform.push('translate3d(' + zoomingPositionX + 'px,' + zoomingPositionY + 'px, 0)');
-    }
+    this.onChangeZoom(val);
+    ev && ev.preventDefault();
+    return false;
+  };
 
-    if (self.rotation) {
-      const translate = {
-        90: '0, -100%',
-        180: '-100%, -100%',
-        270: '-100%, 0',
-      };
+  onZoomMinus = (ev, step = 10) => {
+    let val = this.state.zoom;
 
-      // there is a top left origin already set for zoom; so translate+rotate
-      imgTransform.push(`rotate(${self.rotation}deg)`);
-      imgTransform.push(`translate(${translate[self.rotation] || '0, 0'})`);
+    val = val - step;
+    if (val < 0) val = 0;
 
-    }
+    this.onChangeZoom(val);
+    ev.preventDefault();
+    return false;
+  };
 
-    if (imgTransform?.length > 0) {
-      imgStyle.transform = imgTransform.join(' ');
-    }
-    return imgStyle;
-  },
+  onZoomYPlus = (ev, step = 1) => {
+    let val = this.state.zoomY;
 
-  get maxScale() {
-    return self.isSideways
-      ? Math.min(self.containerWidth / self.naturalHeight, self.containerHeight / self.naturalWidth)
-      : Math.min(self.containerWidth / self.naturalWidth, self.containerHeight / self.naturalHeight);
-  },
+    val = val + step;
+    if (val > MAX_ZOOM_Y) val = MAX_ZOOM_Y;
 
-  get coverScale() {
-    return self.isSideways
-      ? Math.max(self.containerWidth / self.naturalHeight, self.containerHeight / self.naturalWidth)
-      : Math.max(self.containerWidth / self.naturalWidth, self.containerHeight / self.naturalHeight);
-  },
-}))
+    this.onChangeZoomY(val);
+    ev.preventDefault();
+    return false;
+  };
 
-  // actions for the tools
-  .actions(self => {
-    const manager = ToolsManager.getInstance({ name: self.name });
-    const env = { manager, control: self, object: self };
+  onZoomYMinus = (ev, step = 1) => {
+    let val = this.state.zoomY;
 
-    function createImageEntities() {
-      if (!self.store.task) return;
-    
-      const parsedValue = self.multiImage
-        ? self.parsedValueList
-        : self.parsedValue;
+    val = val - step;
+    if (val < MIN_ZOOM_Y) val = MIN_ZOOM_Y;
 
-      if (Array.isArray(parsedValue)) {
-        parsedValue.forEach((src, index) => {
-          self.imageEntities.push({
-            id: `${self.name}#${index}`,
-            src,
-            index,
-          });
-        });
-      } else {
-        self.imageEntities.push({
-          id: `${self.name}#0`,
-          src: parsedValue,
-          index: 0,
-        });
-      }
+    this.onChangeZoomY(val);
+    ev && ev.preventDefault();
+    return false;
+  };
 
-      self.setCurrentImage(0);
+  onWheel = e => {
+    if (e && !e.shiftKey) {
+      return;
+    } else if (e && e.shiftKey) {
+      /**
+       * Disable scrolling page
+       */
+      e.preventDefault();
     }
 
-    function afterAttach() {
-      if (self.selectioncontrol)
-        manager.addTool('MoveTool', Tools.Selection.create({}, env));
+    const step = e.deltaY > 0 ? 5 : -5;
 
-      if (self.zoomcontrol)
-        manager.addTool('ZoomPanTool', Tools.Zoom.create({}, env));
+    this.onZoomPlus(e, step);
+  };
 
-      if (self.brightnesscontrol)
-        manager.addTool('BrightnessTool', Tools.Brightness.create({}, env));
+  onBack = () => {
+    let time = this.wavesurfer.getCurrentTime();
 
-      if (self.contrastcontrol)
-        manager.addTool('ContrastTool', Tools.Contrast.create({}, env));
+    if (!time) return false;
+    time--;
+    this.wavesurfer.setCurrentTime(time > 0 ? time : 0);
+    return false;
+  };
 
-      if (self.rotatecontrol)
-        manager.addTool('RotateTool', Tools.Rotate.create({}, env));
-
-      createImageEntities();
-    }
-
-    function getToolsManager() {
-      return manager;
-    }
-
-    return {
-      afterAttach,
-      getToolsManager,
-    };
-  }).extend((self) => {
-    let skipInteractions = false;
-
-    return {
-      views: {
-        getSkipInteractions() {
-          const manager = self.getToolsManager();
-
-          const isPanning = manager.findSelectedTool()?.toolName === 'ZoomPanTool';
-
-          return skipInteractions || isPanning;
-        },
-      },
-      actions: {
-        setSkipInteractions(value) {
-          skipInteractions = value;
-        },
-        updateSkipInteractions(e) {
-          const currentTool = self.getToolsManager().findSelectedTool();
-
-          if (currentTool?.shouldSkipInteractions) {
-            return self.setSkipInteractions(currentTool.shouldSkipInteractions(e));
-          }
-          self.setSkipInteractions(e.evt && (e.evt.metaKey || e.evt.ctrlKey));
-        },
-      },
-    };
-  }).actions(self => ({
-    freezeHistory() {
-      //self.annotation.history.freeze();
-    },
-
-    afterRegionSelected(region) {
-      if (self.multiImage) {
-        self.setCurrentImage(region.item_index);
-      }
-    },
-
-    createDrawingRegion(areaValue, resultValue, control, dynamic) {
-      const controlTag = self.annotation.names.get(control.name);
-
-      const result = {
-        from_name: controlTag,
-        to_name: self,
-        type: control.resultType,
-        value: resultValue,
-      };
-
-      const areaRaw = {
-        id: guidGenerator(),
-        object: self,
-        ...areaValue,
-        results: [result],
-        dynamic,
-        item_index: self.currentImage,
-      };
-
-      self.drawingRegion = areaRaw;
-      return self.drawingRegion;
-    },
-
-    deleteDrawingRegion() {
-      const { drawingRegion } = self;
-
-      if (!drawingRegion) return;
-      self.drawingRegion = null;
-      destroy(drawingRegion);
-    },
-
-    setSelectionStart(point) {
-      self.selectionArea.setStart(point);
-    },
-    setSelectionEnd(point) {
-      self.selectionArea.setEnd(point);
-    },
-    resetSelection() {
-      self.selectionArea.setStart(null);
-      self.selectionArea.setEnd(null);
-    },
-
-    updateBrushControl(arg) {
-      self.brushControl = arg;
-    },
-
-    updateBrushStrokeWidth(arg) {
-      self.brushStrokeWidth = arg;
-    },
-
-    disableHistoryReinit() {
-      self.shouldReinitHistory = false;
-    },
-
-    enableHistoryReinit() {
-      self.shouldReinitHistory = true;
-    },
+  componentDidMount() {
+    const messages = this.props.messages || defaultMessages;
 
     /**
-     * Update brightnessGrade of Image
-     * @param {number} value
+     * @type {import("wavesurfer.js/types/params").WaveSurferParams}
      */
-    setBrightnessGrade(value) {
-      self.brightnessGrade = value;
-    },
+    let wavesurferConfigure = {
+      container: this.$waveform,
+      waveColor: this.state.colors.waveColor,
+      height: this.props.height,
+      backend: 'MediaElement',
+      progressColor: this.state.colors.progressColor,
 
-    setContrastGrade(value) {
-      self.contrastGrade = value;
-    },
+      splitChannels: true,
 
-    setGridSize(value) {
-      self.gridsize = String(value);
-    },
+      barHeight: 1,
+    };
 
-    setCurrentImage(index = 0) {
-      index = index ?? 0;
-      if (index === self.currentImage) return;
-      self.currentImage = index;
-      self.currentImageEntity = self.findImageEntity(index);
+    if (this.props.regions) {
+      wavesurferConfigure = {
+        ...wavesurferConfigure,
+        plugins: [
+          RegionsPlugin.create({
+            dragSelection: {
+              slop: 5, // slop
+            },
+          }),
+          TimelinePlugin.create({
+            container: '#timeline', // the element in which to place the timeline, or a CSS selector to find it
+            formatTimeCallback, // custom time format callback. (Function which receives number of seconds and returns formatted string)
+            timeInterval, // number of intervals that records consists of. Usually it is equal to the duration in minutes. (Integer or function which receives pxPerSec value and returns value)
+            primaryLabelInterval, // number of primary time labels. (Integer or function which receives pxPerSec value and reurns value)
+            secondaryLabelInterval, // number of secondary time labels (Time labels between primary labels, integer or function which receives pxPerSec value and reurns value).
+            primaryColor: 'blue', // the color of the modulo-ten notch lines (e.g. 10sec, 20sec). The default is '#000'.
+            secondaryColor: 'blue', // the color of the non-modulo-ten notch lines. The default is '#c0c0c0'.
+            primaryFontColor: '#000', // the color of the non-modulo-ten time labels (e.g. 10sec, 20sec). The default is '#000'.
+            secondaryFontColor: '#000',
+          }),
+          CursorPlugin.create({
+            wrapper: this.$waveform,
+            showTime: true,
+            opacity: 1,
+          }),
+        ],
+      };
+    }
 
-      if (self.multiImage) {
-        self.preloadImages();
-        self.disableHistoryReinit();
+    this.wavesurfer = WaveSurfer.create({
+      ...wavesurferConfigure,
+    });
+
+    if (this.props.defaultVolume) {
+      this.wavesurfer.setVolume(this.props.defaultVolume);
+    }
+
+    if (this.props.muted) {
+      this.wavesurfer.setVolume(0);
+    }
+
+    if (this.props.defaultSpeed) {
+      this.wavesurfer.setPlaybackRate(this.props.defaultSpeed);
+    }
+
+    if (this.props.defaultZoom) {
+      this.wavesurfer.zoom(this.props.defaultZoom);
+    }
+
+    this.wavesurfer.on('error', e => {
+      const error = String(e.message || e || '');
+      const url = this.props.src;
+
+      // just general error message
+      let body = messages.ERR_LOADING_AUDIO({ attr: this.props.dataField, error, url });
+
+      // "Failed to fetch" or HTTP error
+      if (error?.includes('HTTP') || error?.includes('fetch')) {
+        this.wavesurfer.hadNetworkError = true;
+
+        body = messages.ERR_LOADING_HTTP({ attr: this.props.dataField, error, url });
+      } else if (typeof e === 'string' && e.includes('media element')) {
+        // obviously audio cannot be parsed if it was not loaded successfully
+        // but WS can generate such error even after network errors, so skip it
+        if (this.wavesurfer.hadNetworkError) return;
+        // "Error loading media element"
+        body = 'Error while processing audio. Check media format and availability.';
       }
-    },
 
-    preloadImages() {
-      self.currentImageEntity.setImageLoaded(false);
-      self.currentImageEntity.preload();
-
-      if (self.multiImage) {
-        const [currentIndex, length] = [self.currentImage, self.imageEntities.length];
-        const prevSliceIndex = clamp(currentIndex - IMAGE_PRELOAD_COUNT, 0, currentIndex);
-        const nextSliceIndex = clamp(currentIndex + 1 + IMAGE_PRELOAD_COUNT, currentIndex, length - 1);
-
-        const images = [
-          ...self.imageEntities.slice(prevSliceIndex, currentIndex),
-          ...self.imageEntities.slice(currentIndex + 1, nextSliceIndex),
-        ];
-
-        images.forEach((imageEntity) => {
-          imageEntity.preload();
-        });
-      }
-    },
+      if (this.props.onError) this.props.onError(body);
+    });
 
     /**
-     * Set pointer of X and Y
+     * Load data
      */
-    setPointerPosition({ x, y }) {
-      self.freezeHistory();
-      self.cursorPositionX = x;
-      self.cursorPositionY = y;
-    },
+    this.wavesurfer.load(this.props.src);
 
     /**
-     * Set zoom
+     * Speed of waveform
      */
-    setZoom(scale) {
-      scale = clamp(scale, 1, Infinity);
-      self.currentZoom = scale;
+    this.wavesurfer.setPlaybackRate(this.state.speed);
 
-      // cool comment about all this stuff
-      const maxScale = self.maxScale;
-      const coverScale = self.coverScale;
+    const self = this;
 
-      if (maxScale > 1) { // image < container
-        if (scale < maxScale) { // scale = 1 or before stage size is max
-          self.stageZoom = scale; // scale stage
-          self.zoomScale = 1; // don't scale image
-        } else {
-          self.stageZoom = maxScale; // scale stage to max
-          self.zoomScale = scale / maxScale; // scale image for the rest scale
-        }
-      } else { // image > container
-        if (scale > maxScale) { // scale = 1 or any other zoom bigger then viewport
-          self.stageZoom = maxScale; // stage squizzed
-          self.zoomScale = scale; // scale image for the rest scale : scale image usually
-        } else { // negative zoom bigger than image negative scale
-          self.stageZoom = scale; // squize stage more
-          self.zoomScale = 1; // don't scale image
-        }
-      }
-
-      if (self.zoomScale > 1) {
-        // zoomScale scales image above maxScale, so scale the rest of stage the same way
-        const z = Math.min(maxScale * self.zoomScale, coverScale);
-
-        if (self.containerWidth / self.naturalWidth > self.containerHeight / self.naturalHeight) {
-          self.stageZoomX = z;
-          self.stageZoomY = self.stageZoom;
-        } else {
-          self.stageZoomX = self.stageZoom;
-          self.stageZoomY = z;
-        }
-      } else {
-        self.stageZoomX = self.stageZoom;
-        self.stageZoomY = self.stageZoom;
-      }
-    },
-
-    updateImageAfterZoom() {
-      const { stageWidth, stageHeight } = self;
-
-      self._recalculateImageParams();
-
-      if (stageWidth !== self.stageWidth || stageHeight !== self.stageHeight) {
-        self._updateRegionsSizes({
-          width: self.stageWidth,
-          height: self.stageHeight,
-          naturalWidth: self.naturalWidth,
-          naturalHeight: self.naturalHeight,
-        });
-      }
-    },
-
-    setZoomPosition(x, y) {
-      const [width, height] = isFF(FF_DEV_3377)
-        ? [self.canvasSize.width, self.canvasSize.height]
-        : [self.containerWidth, self.containerHeight];
-
-      const [minX, minY] = [
-        width - self.stageComponentSize.width * self.zoomScale,
-        height - self.stageComponentSize.height * self.zoomScale,
-      ];
-
-      self.zoomingPositionX = clamp(x, minX, 0);
-      self.zoomingPositionY = clamp(y, minY, 0);
-    },
-
-    resetZoomPositionToCenter() {
-      const { stageComponentSize, zoomScale } = self;
-      const { width, height } = stageComponentSize;
-
-      const [containerWidth, containerHeight] = isFF(FF_DEV_3377)
-        ? [self.canvasSize.width, self.canvasSize.height]
-        : [self.containerWidth, self.containerHeight];
-
-      self.setZoomPosition((containerWidth - width * zoomScale) / 2, (containerHeight - height * zoomScale) / 2);
-    },
-
-    sizeToFit() {
-      const { maxScale } = self;
-
-      self.defaultzoom = 'fit';
-      self.setZoom(maxScale);
-      self.updateImageAfterZoom();
-      self.resetZoomPositionToCenter();
-    },
-
-    sizeToOriginal() {
-      const { maxScale } = self;
-
-      self.defaultzoom = 'original';
-      self.setZoom(maxScale > 1 ? 1 : 1 / maxScale);
-      self.updateImageAfterZoom();
-      self.resetZoomPositionToCenter();
-    },
-
-    sizeToAuto() {
-      self.defaultzoom = 'auto';
-      self.setZoom(1);
-      self.updateImageAfterZoom();
-      self.resetZoomPositionToCenter();
-    },
-
-    handleZoom(val, mouseRelativePos = { x: self.canvasSize.width / 2, y: self.canvasSize.height / 2 }) {
-      if (val) {
-        let zoomScale = self.currentZoom;
-
-        zoomScale = val > 0 ? zoomScale * self.zoomBy : zoomScale / self.zoomBy;
-        if (self.negativezoom !== true && zoomScale <= 1) {
-          self.setZoom(1);
-          self.setZoomPosition(0, 0);
-          self.updateImageAfterZoom();
-          return;
-        }
-        if (zoomScale <= 1) {
-          self.setZoom(zoomScale);
-          self.setZoomPosition(0, 0);
-          self.updateImageAfterZoom();
-          return;
-        }
-
-        // DON'T TOUCH THIS
-        let stageScale = self.zoomScale;
-
-        const mouseAbsolutePos = {
-          x: (mouseRelativePos.x - self.zoomingPositionX) / stageScale,
-          y: (mouseRelativePos.y - self.zoomingPositionY) / stageScale,
-        };
-
-        self.setZoom(zoomScale);
-
-        stageScale = self.zoomScale;
-
-        const zoomingPosition = {
-          x: -(mouseAbsolutePos.x - mouseRelativePos.x / stageScale) * stageScale,
-          y: -(mouseAbsolutePos.y - mouseRelativePos.y / stageScale) * stageScale,
-        };
-
-        self.setZoomPosition(zoomingPosition.x, zoomingPosition.y);
-        self.updateImageAfterZoom();
-      }
-    },
-
-    /**
-     * Set mode of Image (drawing and viewing)
-     * @param {string} mode
-     */
-    setMode(mode) {
-      self.mode = mode;
-    },
-
-    setImageRef(ref) {
-      self.imageRef = ref;
-    },
-
-    setContainerRef(ref) {
-      self.containerRef = ref;
-    },
-
-    setStageRef(ref) {
-      self.stageRef = ref;
-
-      const currentTool = self.getToolsManager().findSelectedTool();
-
-      currentTool?.updateCursor?.();
-    },
-
-    setOverlayRef(ref) {
-      self.overlayRef = ref;
-    },
-
-    // @todo remove
-    setSelected() {
-      // self.selectedShape = shape;
-    },
-
-    rotate(degree = -90) {
-      self.rotation = (self.rotation + degree + 360) % 360;
-
-      let ratioK = 1 / self.stageRatio;
-
-      if (self.isSideways) {
-        self.stageRatio = self.naturalWidth / self.naturalHeight;
-      } else {
-        self.stageRatio = 1;
-      }
-      ratioK = ratioK * self.stageRatio;
-
-      self.setZoom(self.currentZoom);
-
-      if (degree === -90) {
-        this.setZoomPosition(
-          self.zoomingPositionY * ratioK,
-          self.stageComponentSize.height -
-          self.zoomingPositionX * ratioK -
-          self.stageComponentSize.height * self.zoomScale,
-        );
-      }
-      if (degree === 90) {
-        this.setZoomPosition(
-          self.stageComponentSize.width -
-          self.zoomingPositionY * ratioK -
-          self.stageComponentSize.width * self.zoomScale,
-          self.zoomingPositionX * ratioK,
-        );
-      }
-
-      self.updateImageAfterZoom();
-    },
-
-    _recalculateImageParams() {
-      self.stageWidth = isFF(FF_DEV_3377) ? self.naturalWidth * self.stageZoom : Math.round(self.naturalWidth * self.stageZoom);
-      self.stageHeight = isFF(FF_DEV_3377) ? self.naturalHeight * self.stageZoom : Math.round(self.naturalHeight * self.stageZoom);
-    },
-
-    _updateImageSize({ width, height, userResize }) {
-      if (self.naturalWidth === undefined) {
-        return;
-      }
-      if (width > 1 && height > 1) {
-        const prevWidth = self.canvasSize.width;
-        const prevHeight = self.canvasSize.height;
-        const prevStageZoom = self.stageZoom;
-        const prevZoomScale = self.zoomScale;
-
-        self.containerWidth = width;
-        self.containerHeight = height;
-
-        // reinit zoom to calc stageW/H
-        self.setZoom(self.currentZoom);
-
-        self._recalculateImageParams();
-
-        const zoomChangeRatio = self.stageZoom / prevStageZoom;
-        const scaleChangeRatio = self.zoomScale / prevZoomScale;
-        const changeRatio = zoomChangeRatio * scaleChangeRatio;
-
-
-        self.setZoomPosition(
-          self.zoomingPositionX * changeRatio + (self.canvasSize.width / 2 - prevWidth / 2 * changeRatio),
-          self.zoomingPositionY * changeRatio + (self.canvasSize.height / 2 - prevHeight / 2 * changeRatio),
-        );
-      }
-
-      self.sizeUpdated = true;
-      self._updateRegionsSizes({
-        width: self.stageWidth,
-        height: self.stageHeight,
-        naturalWidth: self.naturalWidth,
-        naturalHeight: self.naturalHeight,
-        userResize,
+    if (this.props.regions) {
+      /**
+       * Mouse enter on region
+       */
+      this.wavesurfer.on('region-mouseenter', reg => {
+        reg._region?.onMouseOver();
       });
-    },
 
-    _updateRegionsSizes({ width, height, naturalWidth, naturalHeight, userResize }) {
-      const _historyLength = self.annotation?.history?.history?.length;
-
-      self.annotation.history.freeze();
-
-      self.regions.forEach(shape => {
-        shape.updateImageSize(width / naturalWidth, height / naturalHeight, width, height, userResize);
+      /**
+       * Mouse leave on region
+       */
+      this.wavesurfer.on('region-mouseleave', reg => {
+        reg._region?.onMouseLeave();
       });
-      self.regs.forEach(shape => {
-        shape.updateImageSize(width / naturalWidth, height / naturalHeight, width, height, userResize);
+
+      /**
+       * Add region to wave
+       */
+      this.wavesurfer.on('region-created', (reg) => {
+        const history = self.props.item.annotation.history;
+
+        // if user draw new region the final state will be in `onUpdateEnd`
+        // so we should skip history action in `addRegion`;
+        // during annotation init this step will be rewritten at the end
+        // during undo/redo this action will be skipped the same way
+        history.setSkipNextUndoState();
+        const region = self.props.addRegion(reg);
+
+        if (!region) return;
+
+        reg._region = region;
+        reg.color = region.selectedregionbg;
+
+        // If the region channel is not set, set it to the audio region channel
+        if (reg.channelIdx === -1)
+          reg.channelIdx = region.channel;
+
+        reg.on('click', (ev) => region.onClick(self.wavesurfer, ev));
+        reg.on('update-end', () => region.onUpdateEnd(self.wavesurfer));
+
+        reg.on('dblclick', () => {
+          window.setTimeout(function() {
+            reg.play();
+          }, 0);
+        });
+
+        reg.on('out', () => {});
       });
-      self.drawingRegion?.updateImageSize(width / naturalWidth, height / naturalHeight, width, height, userResize);
-
-      setTimeout(self.annotation.history.unfreeze, 0);
-
-      //sometimes when user zoomed in, annotation was creating a new history. This fix that in case the user has nothing in the history yet
-      if (_historyLength <= 1) {
-        // Don't force unselection of regions during the updateObjects callback from history reinit
-        setTimeout(() => self.annotation.reinitHistory(false), 0);
-      }
-    },
-
-    updateImageSize(ev) {
-      const { naturalWidth, naturalHeight } = self.imageRef ?? ev.target;
-      const { offsetWidth, offsetHeight } = self.containerRef;
-
-      self.naturalWidth = naturalWidth;
-      self.naturalHeight = naturalHeight;
-
-      self._updateImageSize({ width: offsetWidth, height: offsetHeight });
-      // after regions' sizes adjustment we have to reset all saved history changes
-      // mobx do some batch update here, so we have to reset it asynchronously
-      // this happens only after initial load, so it's safe
-      self.setReady(true);
-
-      if (self.defaultzoom === 'fit') {
-        self.sizeToFit();
-      } else {
-        self.sizeToAuto();
-      }
-
-      // Don't force unselection of regions during the updateObjects callback from history reinit
-      setTimeout(() => {
-        if (self.shouldReinitHistory === false) {
-          self.enableHistoryReinit();
-          return;
-        }
-        self.annotation.reinitHistory(false);
-      }, 0);
-    },
-
-    checkLabels() {
-      let labelStates;
-
-      if (isFF(FF_DEV_3666)) {
-        // there should be at least one available label or none of them should be selected
-        labelStates = self.activeStates() || [];
-      } else {
-        // there is should be at least one state selected for *labels object
-        labelStates = (self.states() || []).filter(s => s.type.includes('labels'));
-      }
-      const selectedStates = self.getAvailableStates();
-
-      return selectedStates.length !== 0 || labelStates.length === 0;
-    },
-
-    addShape(shape) {
-      self.regions.push(shape);
-      self.annotation.addRegion(shape);
-      self.setSelected(shape.id);
-      shape.selectRegion();
-    },
+    }
 
     /**
-     * Resize of image canvas
-     * @param {*} width
-     * @param {*} height
+     * Handler of slider
      */
-    onResize(width, height, userResize) {
-      self._updateImageSize({ width, height, userResize });
-    },
+    const slider = document.querySelector('#slider');
 
-    event(name, ev, screenX, screenY) {
-      const [canvasX, canvasY] = self.fixZoomedCoords([screenX, screenY]);
+    if (slider) {
+      slider.oninput = function() {
+        self.wavesurfer.zoom(Number(this.value));
+      };
+    }
 
-      const x = self.canvasToInternalX(canvasX);
-      const y = self.canvasToInternalY(canvasY);
+    this.wavesurfer.on('ready', () => {
+      self.props.onCreate(this.wavesurfer);
 
-      self.getToolsManager().event(name, ev.evt || ev, x, y, canvasX, canvasY);
-    },
-  }));
+      this.wavesurfer.container.onwheel = throttle(this.onWheel, 100);
+    });
 
-const CoordsCalculations = types.model()
-  .actions(self => ({
-    // convert screen coords to image coords considering zoom
-    fixZoomedCoords([x, y]) {
-      if (!self.stageRef) {
-        return [x, y];
-      }
-
-      // good official way, but maybe a bit slower and with repeating cloning
-      const p = self.stageRef.getAbsoluteTransform().copy().invert().point({ x, y });
-
-      return [p.x, p.y];
-    },
-
-    // convert image coords to screen coords considering zoom
-    zoomOriginalCoords([x, y]) {
-      const p = self.stageRef.getAbsoluteTransform().point({ x, y });
-
-      return [p.x, p.y];
-    },
+    this.wavesurfer.on('waveform-ready', () => {
+      this.props.onReady?.(this.wavesurfer);
+    });
 
     /**
-     * @typedef {number[]|{ x: number, y: number }} Point
+     * Pause trigger of audio
      */
+    this.wavesurfer.on('pause', self.props.handlePlay);
 
     /**
-     * @callback PointFn
-     * @param {Point} point
-     * @returns Point
+     * Play trigger of audio
      */
+    this.wavesurfer.on('play', self.props.handlePlay);
 
-    /**
-     * Wrap point operations to convert zoomed coords from screen to image and back
-     * Good for event handlers, receiving screen coords, but working with image coords
-     * Accepts both [x, y] and {x, y} points; preserves this format
-     * @param {PointFn} fn wrapped function do some math with image coords
-     * @return {PointFn} outer function do some math with screen coords
-     */
-    fixForZoom(fn) {
-      return p => this.fixForZoomWrapper(p, fn);
-    },
-    fixForZoomWrapper(p, fn) {
-      const asArray = p.x === undefined;
-      const [x, y] = self.fixZoomedCoords(asArray ? p : [p.x, p.y]);
-      const modified = fn(asArray ? [x, y] : { x, y });
-      const zoomed = self.zoomOriginalCoords(asArray ? modified : [modified.x, modified.y]);
+    this.wavesurfer.on('seek', self.props.handleSeek);
 
-      return asArray ? zoomed : { x: zoomed[0], y: zoomed[1] };
-    },
-  }))
-  // putting this transforms to views forces other getters to be recalculated on resize
-  .views(self => ({
-    // helps to calculate rotation because internal coords are square and real one usually aren't
-    get whRatio() {
-      // don't need this for absolute coords
-      if (!isFF(FF_DEV_3793)) return 1;
+    if (this.props.regions) {
+      this.props.onLoad(this.wavesurfer);
+    }
 
-      return self.stageWidth / self.stageHeight;
-    },
+    this.hotkeys.addNamed('audio:back', this.onBack, Hotkey.DEFAULT_SCOPE + ',' + Hotkey.INPUT_SCOPE);
+  }
 
-    // @todo scale?
-    canvasToInternalX(n) {
-      return n / self.stageWidth * 100;
-    },
+  componentWillUnmount() {
+    this.hotkeys.unbindAll();
+    this.wavesurfer.unAll();
+  }
 
-    canvasToInternalY(n) {
-      return n / self.stageHeight * 100;
-    },
+  setWaveformRef = node => {
+    this.$waveform = node;
+  };
 
-    internalToCanvasX(n) {
-      return n / 100 * self.stageWidth;
-    },
+  render() {
+    const self = this;
 
-    internalToCanvasY(n) {
-      return n / 100 * self.stageHeight;
-    },
-  }));
+    const speeds = ['0.5', '0.75', '1.0', '1.25', '1.5', '2.0'];
 
-// mock coords calculations to transparently pass coords with FF 3793 off
-const AbsoluteCoordsCalculations = CoordsCalculations
-  .views(() => ({
-    canvasToInternalX(n) {
-      return n;
-    },
-    canvasToInternalY(n) {
-      return n;
-    },
-    internalToCanvasX(n) {
-      return n;
-    },
-    internalToCanvasY(n) {
-      return n;
-    },
-  }));
+    return (
+      <div>
+        <div id="wave" ref={this.setWaveformRef} className={styles.wave} />
 
-const ImageModel = types.compose(
-  'ImageModel',
-  TagAttrs,
-  ObjectBase,
-  AnnotationMixin,
-  IsReadyWithDepsMixin,
-  ImageEntityMixin,
-  Model,
-  isFF(FF_DEV_3793) ? CoordsCalculations : AbsoluteCoordsCalculations,
-);
+        <div id="timeline" />
 
-const HtxImage = inject('store')(ImageView);
+        {this.props.zoom && (
 
-Registry.addTag('image', ImageModel, HtxImage);
-Registry.addObjectType(ImageModel);
-
-export { ImageModel, HtxImage };
+                </div>
+                <div style={{ width: '100%' }}>
+                  <Slider
+                    min={0}
+                    step={10}
+                    max={500}
+                    value={typeof this.state.zoom === 'number' ? this.state.zoom : 0}
+                    onChange={value => {
+                      this.onChangeZoom(value);
+                    }}
+                  />
+                </div>
+                <div style={{ marginTop: '6px', marginLeft: '5px' }}>
+                  <Tooltip placement="topLeft" title="Horizontal zoom in">
+                    <ZoomInOutlined onClick={this.onZoomPlus} className={globalStyles.link} />
+                  </Tooltip>
+                </div>
+              </div>
+            </Col>
+            <Col flex={4} style={{ textAlign: 'right', marginTop: '6px' }}>
+              <div style={{ display: 'flex' }}>
+                <div style={{ marginTop: '6px', marginRight: '5px' }}>
+                  <Tooltip placement="topLeft" title="Vertical zoom out">
+                    <ZoomOutOutlined onClick={this.onZoomYMinus} className={globalStyles.link} />
+                  </Tooltip>
+                </div>
+                <div style={{ width: '100%' }}>
+                  <Slider
+                    min={MIN_ZOOM_Y}
+                    step={.1}
+                    max={MAX_ZOOM_Y}
+                    value={typeof this.state.zoomY === 'number' ? this.state.zoomY : MIN_ZOOM_Y}
+                    onChange={value => {
+                      this.onChangeZoomY(value);
+                    }}
+                  />
+                </div>
+                <div style={{ marginTop: '6px', marginLeft: '5px' }}>
+                  <Tooltip placement="topLeft" title="Vertical zoom in">
+                    <ZoomInOutlined onClick={this.onZoomYPlus} className={globalStyles.link} />
+                  </Tooltip>
+                </div>
+              </div>
+            </Col>
+            <Col flex={4} style={{ textAlign: "right", marginTop: "6px" }}>
+              <div style={{ display: "flex" }}>
+                <div style={{ marginTop: "6px", marginRight: "5px" }}>
+                  <ZoomOutOutlined onClick={this.onZoomYMinus} className={globalStyles.link} />
+                </div>
+                <div style={{ width: "100%" }}>
+                  <Slider
+                    min={MIN_ZOOM_Y}
+                    step={.1}
+                    max={MAX_ZOOM_Y}
+                    value={typeof this.state.zoomY === "number" ? this.state.zoomY : MIN_ZOOM_Y}
+                    onChange={value => {
+                      this.onChangeZoomY(value);
+                    }}
+                  />
+                </div>
+                <div style={{ marginTop: "6px", marginLeft: "5px" }}>
+                  <ZoomInOutlined onClick={this.onZoomYPlus} className={globalStyles.link} />
+                </div>
+              </div>
+            </Col>
+            <Col flex={3}>
+              {this.props.volume && (
+                <div style={{ display: 'flex', marginTop: '6.5px' }}>
+                  <div style={{ width: '100%' }}>
+                    <Slider
+                      min={0}
+                      max={1}
+                      step={0.1}
+                      value={typeof this.state.volume === 'number' ? this.state.volume : 1}
+                      onChange={value => {
+                        this.onChangeVolume(value);
+                      }}
+                    />
+                  </div>
+                  <div style={{ marginLeft: '10px', marginTop: '5px' }}>
+                    <SoundOutlined />
+                  </div>
+                </div>
+              )}
+            </Col>
+            <Col flex={1} style={{ marginTop: '6px' }}>
+              {this.props.speed && (
+                <Select
+                  placeholder="Speed"
+                  style={{ width: '100%' }}
+                  defaultValue={this.state.speed}
+                  onChange={self.onChangeSpeed}
+                >
+                  {speeds.map(speed => (
+                    <Select.Option value={+speed} key={speed}>
+                      Speed {speed}
+                    </Select.Option>
+                  ))}
+                </Select>
+              )}
+            </Col>
+          </Row>
+        )}
+      </div>
+    );
+  }
+}
