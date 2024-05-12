@@ -1,6 +1,9 @@
-import { getEnv, getParent, getRoot, getType, types } from "mobx-state-tree";
-import { guidGenerator } from "../core/Helpers";
-import { AnnotationMixin } from "./AnnotationMixin";
+import { getEnv, getParent, getRoot, getType, types } from 'mobx-state-tree';
+import { guidGenerator } from '../core/Helpers';
+import { isDefined } from '../utils/utilities';
+import { AnnotationMixin } from './AnnotationMixin';
+import { ReadOnlyRegionMixin } from './ReadOnlyMixin';
+import { RELATIVE_STAGE_HEIGHT, RELATIVE_STAGE_WIDTH } from '../components/ImageView/Image';
 
 const RegionsMixin = types
   .model({
@@ -8,28 +11,29 @@ const RegionsMixin = types
     pid: types.optional(types.string, guidGenerator),
 
     score: types.maybeNull(types.number),
-    readonly: types.optional(types.boolean, false),
 
-    hidden: types.optional(types.boolean, false),
+    filtered: types.optional(types.boolean, false),
 
-    parentID: types.optional(types.string, ""),
+    parentID: types.optional(types.string, ''),
 
     fromSuggestion: false,
 
     // Dynamic preannotations enabled
     dynamic: false,
 
-    locked: false,
-
     origin: types.optional(types.enumeration([
       'prediction',
       'prediction-changed',
       'manual',
     ]), 'manual'),
+
+    item_index: types.maybeNull(types.number),
   })
   .volatile(() => ({
     // selected: false,
     _highlighted: false,
+    hidden: false,
+    locked: false,
     isDrawing: false,
     perRegionFocusRequest: null,
     shapeRef: null,
@@ -51,9 +55,7 @@ const RegionsMixin = types
     },
 
     get editable() {
-      if (self.locked === true) return false;
-
-      return self.readonly === false && self.annotation.editable === true;
+      throw new Error('Not implemented');
     },
 
     get isCompleted() {
@@ -72,15 +74,47 @@ const RegionsMixin = types
       return true;
     },
 
-    getConnectedDynamicRegions(selfExcluding) {
-      const { regions = [] } = getRoot(self).annotationStore?.selected || {};
-
-      return regions.filter(r => {
-        if (selfExcluding && r === self) return false;
-        return r.dynamic && r.type === self.type && r.labelName === self.labelName;
-      });
+    get currentImageEntity() {
+      return self.parent.findImageEntity(self.item_index ?? 0);
     },
 
+    getConnectedDynamicRegions(excludeSelf) {
+      const { regions = [] } = getRoot(self).annotationStore?.selected || {};
+      const { type, labelName } = self;
+
+      const result = regions.filter(region => {
+        if (excludeSelf && region === self) return false;
+        const canBePartOfNotification = self.supportSuggestions ? self.dynamic : true;
+
+        return canBePartOfNotification
+          && region.type === type
+          && region.labelName === labelName
+          && region.results?.[0]?.to_name === self.results?.[0]?.to_name;
+      });
+
+      return result;
+    },
+
+    // Indicates that it is not temporary region created just to display data like Textarea's one
+    // and is not a suggestion
+    get isRealRegion() {
+      return self.annotation?.areas?.has(self.id);
+    },
+
+    get shouldNotifyDrawingFinished() {
+      // extra calls on destroying will be skipped
+      // @see beforeDestroy action
+      if (!self.isRealRegion) return false;
+      if (self.annotation.isSuggestionsAccepting) return false;
+      // There are two modes:
+      // If object tag support suggestions - the region should be marked as a dynamic one to make notifications
+      // If object tag doesn't support suggestions - every region works as dynamic with auto suggestions
+      const canBeReasonOfNotification = self.supportSuggestions ? self.dynamic && !self.fromSuggestion : true;
+
+      const isSmartEnabled = self.results.some(r => r.from_name.smartEnabled);
+
+      return isSmartEnabled && canBeReasonOfNotification;
+    },
   }))
   .actions(self => {
     return {
@@ -93,77 +127,59 @@ const RegionsMixin = types
       },
 
       setShapeRef(ref) {
+        if (!ref) return;
         self.shapeRef = ref;
       },
 
+      setItemIndex(index) {
+        if (!isDefined(index)) throw new Error('Index must be provided for', self);
+        self.item_index = index;
+      },
+
       beforeDestroy() {
+        // beforeDestroy may be called by accident for Textarea and etc. as part of updateObjects action
+        // in that case the region already has no results
+
+        // The other bad behaviour is that beforeDestroy may be called on accepting suggestions 'cause they are deleting in that case
+
+        // So if you see this bad thing during debugging - now you know why
+        // and why we need this check
+        if (self.isRealRegion) {
+          return self.beforeDestroyArea();
+        }
+      },
+
+      beforeDestroyArea() {
         self.notifyDrawingFinished({ destroy: true });
       },
 
-      setLocked(locked){
-        self.locked = locked;
+      setLocked(locked) {
+        if (locked instanceof Function) {
+          self.locked = locked(self.locked);
+        } else {
+          self.locked = locked;
+        }
       },
 
       makeDynamic() {
         self.dynamic = true;
       },
 
-      // All of the below accept size as an argument
-      moveTop() {},
-      moveBottom() {},
-      moveLeft() {},
-      moveRight() {},
-
-      sizeRight() {},
-      sizeLeft() {},
-      sizeTop() {},
-      sizeBottom() {},
-
-      // "web" degree is opposite to mathematical, -90 is 90 actually
-      // swapSizes = true when canvas is already rotated at this moment
-      // @todo not used
-      rotatePoint(point, degree, swapSizes = true) {
-        const { x, y } = point;
-
-        if (!degree) return { x, y };
-
-        degree = (360 + degree) % 360;
-        // transform origin is (w/2, w/2) for ccw rotation
-        // (h/2, h/2) for cw rotation
-        const w = self.parent.stageWidth;
-        const h = self.parent.stageHeight;
-        // actions: translate to fit origin, rotate, translate back
-        //   const shift = size / 2;
-        //   const newX = (x - shift) * cos + (y - shift) * sin + shift;
-        //   const newY = -(x - shift) * sin + (y - shift) * cos + shift;
-        // for ortogonal degrees it's simple:
-
-        if (degree === 270) return { x: y, y: (swapSizes ? h : w) - x };
-        if (degree === 90) return { x: (swapSizes ? w : h) - y, y: x };
-        if (Math.abs(degree) === 180) return { x: w - x, y: h - y };
-        return { x, y };
-      },
-
-      // @todo not used
-      rotateDimensions({ width, height }, degree) {
-        if ((degree + 360) % 180 === 0) return { width, height };
-        return { width: height, height: width };
-      },
-
+      // @todo this conversion methods should be removed after removing FF_DEV_3793
       convertXToPerc(x) {
-        return (x * 100) / self.parent.stageWidth;
+        return (x * RELATIVE_STAGE_WIDTH) / self.currentImageEntity.stageWidth;
       },
 
       convertYToPerc(y) {
-        return (y * 100) / self.parent.stageHeight;
+        return (y * RELATIVE_STAGE_HEIGHT) / self.currentImageEntity.stageHeight;
       },
 
       convertHDimensionToPerc(hd) {
-        return (hd * (self.scaleX || 1) * 100) / self.parent.stageWidth;
+        return (hd * (self.scaleX || 1) * RELATIVE_STAGE_WIDTH) / self.currentImageEntity.stageWidth;
       },
 
       convertVDimensionToPerc(vd) {
-        return (vd * (self.scaleY || 1) * 100) / self.parent.stageHeight;
+        return (vd * (self.scaleY || 1) * RELATIVE_STAGE_HEIGHT) / self.currentImageEntity.stageHeight;
       },
 
       // update region appearence based on it's current states, for
@@ -172,54 +188,7 @@ const RegionsMixin = types
       updateAppearenceFromState() {},
 
       serialize() {
-        console.error("Region class needs to implement serialize");
-      },
-
-      toStateJSON() {
-        const parent = self.parent;
-        const buildTree = control => {
-          const tree = {
-            id: self.pid,
-            from_name: control.name,
-            to_name: parent.name,
-            source: parent.value,
-            type: control.type,
-            parent_id: self.parentID === "" ? null : self.parentID,
-          };
-
-          if (self.normalization) tree["normalization"] = self.normalization;
-
-          return tree;
-        };
-
-        if (self.states && self.states.length) {
-          return self.states
-            .map(s => {
-              const ser = self.serialize(s, parent);
-
-              if (!ser) return null;
-
-              const tree = {
-                ...buildTree(s),
-                ...ser,
-              };
-
-              // in case of labels it's gonna be, labels: ["label1", "label2"]
-
-              return tree;
-            })
-            .filter(Boolean);
-        } else {
-          const obj = self.annotation.toNames.get(parent.name);
-          const control = obj.length ? obj[0] : obj;
-
-          const tree = {
-            ...buildTree(control),
-            ...self.serialize(control, parent),
-          };
-
-          return tree;
-        }
+        console.error('Region class needs to implement serialize');
       },
 
       selectRegion() {},
@@ -230,7 +199,7 @@ const RegionsMixin = types
      * @param {boolean} tryToKeepStates try to keep states selected if such settings enabled
      */
       unselectRegion(tryToKeepStates = false) {
-        console.log("UNSELECT REGION", "you should not be here");
+        console.log('UNSELECT REGION', 'you should not be here');
         // eslint-disable-next-line no-constant-condition
         if (1) return;
         const annotation = self.annotation;
@@ -259,9 +228,9 @@ const RegionsMixin = types
       onClickRegion(ev) {
         const annotation = self.annotation;
 
-        if (!annotation.editable || self.isDrawing) return;
+        if (!self.isReadOnly() && (self.isDrawing || annotation.isDrawing)) return;
 
-        if (annotation.relationMode) {
+        if (!self.isReadOnly() && annotation.relationMode) {
           annotation.addRelation(self);
           annotation.stopRelationMode();
           annotation.regionStore.unselectAll();
@@ -276,8 +245,8 @@ const RegionsMixin = types
 
         if (additiveMode) {
           annotation.toggleRegionSelection(self);
-        } else {const wasNotSelected = !self.selected;
-
+        } else {
+          const wasNotSelected = !self.selected;
 
           if (wasNotSelected) {
             annotation.selectArea(self);
@@ -303,7 +272,14 @@ const RegionsMixin = types
         self.setHighlight(!self._highlighted);
       },
 
-      toggleHidden(e) {
+      toggleFiltered(e) {
+        self.filtered = !self.filtered;
+        self.toggleHidden(e, true);
+        e && e.stopPropagation();
+      },
+
+      toggleHidden(e, isFiltered = false) {
+        if (!isFiltered) self.filtered = false;
         self.hidden = !self.hidden;
         e && e.stopPropagation();
       },
@@ -313,8 +289,8 @@ const RegionsMixin = types
           self.origin = 'prediction-changed';
         }
 
-        // everything above is related to dynamic preannotations
-        if (!self.dynamic || self.fromSuggestion) return;
+        // everything below is related to dynamic preannotations
+        if (!self.shouldNotifyDrawingFinished) return;
 
         clearTimeout(self.drawingTimeout);
 
@@ -323,11 +299,13 @@ const RegionsMixin = types
           const env = getEnv(self);
 
           self.drawingTimeout = setTimeout(() => {
-            env.events.invoke("regionFinishedDrawing", self, self.getConnectedDynamicRegions(destroy));
+            const connectedRegions = self.getConnectedDynamicRegions(destroy);
+
+            env.events.invoke('regionFinishedDrawing', self, connectedRegions);
           }, timeout);
         }
       },
     };
   });
 
-export default types.compose(RegionsMixin, AnnotationMixin);
+export default types.compose(RegionsMixin, ReadOnlyRegionMixin, AnnotationMixin);

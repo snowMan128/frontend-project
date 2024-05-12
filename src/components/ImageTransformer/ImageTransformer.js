@@ -1,7 +1,9 @@
-import React, { Component } from "react";
-import { MIN_SIZE } from "../../tools/Base";
-import { getBoundingBoxAfterChanges } from "../../utils/image";
-import LSTransformer from "./LSTransformer";
+import React, { Component } from 'react';
+import { MIN_SIZE } from '../../tools/Base';
+import { getBoundingBoxAfterChanges } from '../../utils/image';
+import LSTransformer from './LSTransformer';
+import LSTransformerOld from './LSTransformerOld';
+import { FF_DEV_2671, FF_ZOOM_OPTIM, isFF } from '../../utils/feature-flags';
 
 const EPSILON = 0.001;
 
@@ -57,11 +59,11 @@ export default class TransformerComponent extends Component {
       });
 
       if (!shapeContainer) return;
-      if (shapeContainer.hasName("_transformable")) selectedNodes.push(shapeContainer);
+      if (shapeContainer.hasName('_transformable')) selectedNodes.push(shapeContainer);
       if (!shapeContainer.find) return;
 
       const transformableElements = shapeContainer.find(node => {
-        return node.hasName("_transformable");
+        return node.hasName('_transformable');
       }, true);
 
       selectedNodes.push(...transformableElements);
@@ -89,14 +91,14 @@ export default class TransformerComponent extends Component {
     const [realX, realY] = [box.x - stage.x, box.y - stage.y];
 
     if (realX < 0) {
-      x = 0;
+      x = isFF(FF_ZOOM_OPTIM) ? stage.x : 0;
       width += realX;
     } else if (realX + box.width > stage.width) {
       width = stage.width - realX;
     }
 
     if (realY < 0) {
-      y = 0;
+      y = isFF(FF_ZOOM_OPTIM) ? stage.y : 0;
       height += realY;
     } else if (realY + box.height > stage.height) {
       height = stage.height - realY;
@@ -107,7 +109,13 @@ export default class TransformerComponent extends Component {
 
   getStageAbsoluteDimensions() {
     const stage = this.transformer.getStage();
-    const [scaledStageWidth, scaledStageHeight] = [stage.width() * stage.scaleX(), stage.height() * stage.scaleY()];
+    const { stageWidth, stageHeight } = this.props.item;
+
+    let [scaledStageWidth, scaledStageHeight] = [stageWidth * stage.scaleX(), stageHeight * stage.scaleY()];
+
+    if (isFF(FF_ZOOM_OPTIM) && this.props.item.isSideways) {
+      [scaledStageWidth, scaledStageHeight] = [scaledStageHeight, scaledStageWidth];
+    }
     const [stageX, stageY] = [stage.x(), stage.y()];
 
     return {
@@ -137,7 +145,7 @@ export default class TransformerComponent extends Component {
       const fixed = this.fitBBoxToScaledStage(clientRect, stageDimensions);
 
       // if bounding box is out of stage — do nothing
-      if (["x", "y", "width", "height"].some(key => Math.abs(fixed[key] - clientRect[key]) > EPSILON)) return oldBox;
+      if (['x', 'y', 'width', 'height'].some(key => Math.abs(fixed[key] - clientRect[key]) > EPSILON)) return oldBox;
       return newBox;
     } else {
       return this.fitBBoxToScaledStage(newBox, stageDimensions);
@@ -164,12 +172,60 @@ export default class TransformerComponent extends Component {
     });
   };
 
-  render() {
-    if (!this.props.supportsTransform) return null;
-
+  renderLSTransformer() {
     return (
       <>
         <LSTransformer
+          ref={node => {
+            this.transformer = node;
+
+            if (this.transformer) {
+              this.transformer.rotateEnabled(false);
+            }
+          }}
+          resizeEnabled={true}
+          ignoreStroke={true}
+          keepRatio={this.props.singleNodeMode !== true}
+          useSingleNodeRotation={this.props.useSingleNodeRotation}
+          rotateEnabled={this.props.rotateEnabled}
+          borderDash={[3, 1]}
+          // borderStroke={"red"}
+          boundBoxFunc={this.constrainSizes}
+          anchorSize={8}
+          flipEnabled={false}
+          zoomedIn={this.props.item.zoomScale > 1}
+          onDragStart={e => {
+            const { item: { selectedRegionsBBox } } = this.props;
+
+            this.freeze();
+
+            if (!this.transformer || e.target !== e.currentTarget || !selectedRegionsBBox) return;
+
+            this.draggingAreaBBox = {
+              x: selectedRegionsBBox.left,
+              y: selectedRegionsBBox.top,
+              width: selectedRegionsBBox.right - selectedRegionsBBox.left,
+              height: selectedRegionsBBox.bottom - selectedRegionsBBox.top,
+            };
+          }}
+          dragBoundFunc={this.dragBoundFunc}
+          onDragEnd={() => {
+            this.unfreeze();
+            setTimeout(this.checkNode);
+          }}
+          onTransformEnd={() => {
+            setTimeout(this.checkNode);
+          }}
+          backSelector={this.props.draggableBackgroundSelector}
+        />
+      </>
+    );
+  }
+
+  renderOldLSTransformer() {
+    return (
+      <>
+        <LSTransformerOld
           ref={node => {
             this.transformer = node;
           }}
@@ -201,10 +257,24 @@ export default class TransformerComponent extends Component {
           dragBoundFunc={this.dragBoundFunc}
           onDragEnd={() => {
             this.unfreeze();
+            setTimeout(this.checkNode);
+          }}
+          onTransformEnd={() => {
+            setTimeout(this.checkNode);
           }}
           backSelector={this.props.draggableBackgroundSelector}
         />
       </>
     );
+  }
+
+  render() {
+    if (!this.props.supportsTransform) return null;
+
+    if (isFF(FF_DEV_2671)) {
+      return this.renderLSTransformer();
+    } else {
+      return this.renderOldLSTransformer();
+    }
   }
 }

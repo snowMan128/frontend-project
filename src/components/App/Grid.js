@@ -1,13 +1,14 @@
-import React, { Component } from "react";
-import { Button, Spin } from "antd";
-import { LeftCircleOutlined, RightCircleOutlined } from "@ant-design/icons";
-import styles from "./Grid.module.scss";
-import { EntityTab } from "../AnnotationTabs/AnnotationTabs";
-import { observe } from "mobx";
-import Konva from "konva";
-import { Annotation } from "./Annotation";
-import { isDefined } from "../../utils/utilities";
-import { moveStylesBetweenHeadTags } from "../../utils/html";
+import React, { Component } from 'react';
+import { Button, Spin } from 'antd';
+import { LeftCircleOutlined, RightCircleOutlined } from '@ant-design/icons';
+import styles from './Grid.module.scss';
+import { EntityTab } from '../AnnotationTabs/AnnotationTabs';
+import { observe } from 'mobx';
+import Konva from 'konva';
+import { Annotation } from './Annotation';
+import { isDefined } from '../../utils/utilities';
+import { FF_DEV_3391, isFF } from '../../utils/feature-flags';
+import { moveStylesBetweenHeadTags } from '../../utils/html';
 
 /***** DON'T TRY THIS AT HOME *****/
 /*
@@ -20,15 +21,20 @@ This triggers next rerender with next annotation until all the annotations are r
 class Item extends Component {
   componentDidMount() {
     Promise.all(this.props.annotation.objects.map(o => {
+      // as the image has lazy load, and the image is not being added to the viewport
+      // until it's loaded we need to skip the validation assuming that it's always ready,
+      // otherwise we'll get a blank canvas
+      if (o.type === 'image') return Promise.resolve();
+      
       return o.isReady
         ? Promise.resolve(o.isReady)
         : new Promise(resolve => {
-          const dispose = observe(o, "isReady", ()=>{
+          const dispose = observe(o, 'isReady', () => {
             dispose();
             resolve();
           });
         });
-    })).then(()=>{
+    })).then(() => {
       // ~2 ticks for canvas to be rendered and resized completely
       setTimeout(this.props.onFinish, 32);
     });
@@ -51,7 +57,7 @@ export default class Grid extends Component {
   }
 
   componentDidMount() {
-    if (this.props.annotations[0] !== this.props.store.selected) {
+    if (!isFF(FF_DEV_3391) && this.props.annotations[0] !== this.props.store.selected) {
       this.startRenderCycle();
     }
   }
@@ -87,19 +93,19 @@ export default class Grid extends Component {
     Konva.stages.map(stage => stage.draw());
 
     /* canvases are cloned empty, so clone their content */
-    const sourceCanvas = item.querySelectorAll("canvas");
-    const clonedCanvas = clone.querySelectorAll("canvas");
+    const sourceCanvas = item.querySelectorAll('canvas');
+    const clonedCanvas = clone.querySelectorAll('canvas');
 
     clonedCanvas.forEach((canvas, i) => {
-      canvas.getContext("2d").drawImage(sourceCanvas[i], 0, 0);
+      canvas.getContext('2d').drawImage(sourceCanvas[i], 0, 0);
     });
 
     /*
       Procedure created style rules are not clonable so for
       iframe we should take care about them (highlight styles)
     */
-    const sourceIframe = item.querySelectorAll("iframe");
-    const clonedIframe = clone.querySelectorAll("iframe");
+    const sourceIframe = item.querySelectorAll('iframe');
+    const clonedIframe = clone.querySelectorAll('iframe');
 
     clonedIframe.forEach((iframe, idx) => {
       iframe.contentWindow.document.open();
@@ -118,17 +124,20 @@ export default class Grid extends Component {
   };
 
   shift = delta => {
-    const c = this.container.current;
+    const container = this.container.current;
+    const children = container.children;
 
-    if (!c) return;
-    const gap = 30;
-    const step = (c.offsetWidth + gap) / 2;
-    const current = (c.scrollLeft + delta) / step;
-    const next = delta > 0 ? Math.ceil(current) : Math.floor(current);
+    const current = Array.from(children).findIndex(child => container.scrollLeft <= child.offsetLeft);
+
+    if (!container) return;
+    
     const count = this.props.annotations.length;
+    const next = current + delta; 
+    
+    if (next < 0 || next > count - 1) return;
+    const newPosition = children[next].offsetLeft;
 
-    if (next < 0 || next > count - 2) return;
-    c.scrollTo({ left: next * step, top: 0, behavior: "smooth" });
+    container.scrollTo({ left: newPosition, top: 0, behavior: 'smooth' });
   };
 
   left = () => {
@@ -142,13 +151,14 @@ export default class Grid extends Component {
   select = c => {
     const { store } = this.props;
 
-    c.type === "annotation" ? store.selectAnnotation(c.id) : store.selectPrediction(c.id);
+    c.type === 'annotation' ? store.selectAnnotation(c.id) : store.selectPrediction(c.id);
   };
 
 
   render() {
     const i = this.state.item;
-    const { annotations, store: { selected } } = this.props;
+    const { annotations } = this.props;
+    const selected = isFF(FF_DEV_3391) ? null : this.props.store.selected;
     const isRenderingNext = i < annotations.length && annotations[i] === selected;
 
     return (
@@ -159,31 +169,34 @@ export default class Grid extends Component {
               <EntityTab
                 entity={c}
                 onClick={() => this.select(c)}
-                prediction={c.type === "prediction"}
+                prediction={c.type === 'prediction'}
                 bordered={false}
                 style={{ height: 44 }}
               />
-              {!this.state.loaded.has(c.id) && (
-                <div style={{
-                  top: 0,
-                  left: 0,
-                  position: 'absolute',
-                  width: '100%',
-                  height: '100%',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}>
-                  <Spin size="large" />
-                </div>
-              )}
+              {isFF(FF_DEV_3391)
+                ? <Annotation root={this.props.root} annotation={c} />
+                : !this.state.loaded.has(c.id) && (
+                  <div style={{
+                    top: 0,
+                    left: 0,
+                    position: 'absolute',
+                    width: '100%',
+                    height: '100%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}>
+                    <Spin size="large" />
+                  </div>
+                )
+              }
             </div>
           ))}
           {isRenderingNext && (
-            <div id={`c-tmp`} key={`anno-tmp`} style={{ opacity: 0, position: 'relative', right: 99999 }}>
+            <div id={'c-tmp'} key={'anno-tmp'} style={{ opacity: 0, position: 'relative', right: 99999 }}>
               <EntityTab
                 entity={selected}
-                prediction={selected.type === "prediction"}
+                prediction={selected.type === 'prediction'}
                 bordered={false}
                 style={{ height: 44 }}
               />

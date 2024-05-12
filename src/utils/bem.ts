@@ -7,8 +7,6 @@ import {
   FC,
   forwardRef,
   FunctionComponent,
-  HTMLAttributes,
-  MutableRefObject,
   ReactHTML,
   ReactSVG,
   useContext
@@ -114,11 +112,11 @@ const assembleClass = (block: string, elem?: string, mix?: CNMix | CNMix[], mod?
   }
 
   const attachNamespace = (cls: string) => {
-    if (new RegExp(CSS_PREFIX).test(cls)) return cls;
-    else return `${CSS_PREFIX}${cls}`;
+    if (typeof cls !== 'string') console.error('Non-string classname: ', cls);
+    return String(cls).startsWith(CSS_PREFIX) ? cls : `${CSS_PREFIX}${cls}`;
   };
 
-  return finalClass.map(attachNamespace).join(" ");
+  return finalClass.map(attachNamespace).join(' ');
 };
 
 const BlockContext = createContext<CN | null>(null);
@@ -209,7 +207,7 @@ export const BemWithSpecifiContext = (context?: Context<CN | null>) => {
   });
 
   const Elem = forwardRef(<T extends FC<any>, D extends TagNames>({
-    tag = "div",
+    tag = 'div',
     component,
     block,
     name,

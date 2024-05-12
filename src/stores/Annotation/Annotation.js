@@ -1,24 +1,44 @@
-import { destroy, detach, getEnv, getParent, getRoot, isAlive, onSnapshot, types } from "mobx-state-tree";
+import { destroy, detach, flow, getEnv, getParent, getRoot, isAlive, onSnapshot, types } from 'mobx-state-tree';
 
-import Constants from "../../core/Constants";
-import { Hotkey } from "../../core/Hotkey";
-import RegionStore from "../RegionStore";
-import RelationStore from "../RelationStore";
-import TimeTraveller from "../../core/TimeTraveller";
-import Tree, { TRAVERSE_STOP } from "../../core/Tree";
-import Utils from "../../utils";
-import { delay, isDefined } from "../../utils/utilities";
-import { guidGenerator } from "../../core/Helpers";
-import { errorBuilder } from "../../core/DataValidator/ConfigValidator";
-import Area from "../../regions/Area";
-import throttle from "lodash.throttle";
-import { UserExtended } from "../UserStore";
-import { FF_DEV_2100, FF_DEV_2100_A, isFF } from "../../utils/feature-flags";
+import throttle from 'lodash.throttle';
+import Constants from '../../core/Constants';
+import { errorBuilder } from '../../core/DataValidator/ConfigValidator';
+import { guidGenerator } from '../../core/Helpers';
+import { Hotkey } from '../../core/Hotkey';
+import TimeTraveller from '../../core/TimeTraveller';
+import Tree, { TRAVERSE_STOP } from '../../core/Tree';
+import Types from '../../core/Types';
+import Area from '../../regions/Area';
+import Result from '../../regions/Result';
+import Utils from '../../utils';
+import {
+  FF_DEV_1284,
+  FF_DEV_1598,
+  FF_DEV_2100,
+  FF_DEV_2432,
+  FF_DEV_3391, FF_LLM_EPIC,
+  FF_LSDV_3009,
+  FF_LSDV_4583,
+  FF_LSDV_4832,
+  FF_LSDV_4988,
+  isFF
+} from '../../utils/feature-flags';
+import { delay, isDefined } from '../../utils/utilities';
+import { CommentStore } from '../Comment/CommentStore';
+import RegionStore from '../RegionStore';
+import RelationStore from '../RelationStore';
+import { UserExtended } from '../UserStore';
 
-const hotkeys = Hotkey("Annotations", "Annotations");
+const hotkeys = Hotkey('Annotations', 'Annotations');
+
+const TrackedState = types
+  .model('TrackedState', {
+    areas: types.map(Area),
+    relationStore: types.optional(RelationStore, {}),
+  });
 
 export const Annotation = types
-  .model("Annotation", {
+  .model('Annotation', {
     id: types.identifier,
     // @todo this value used `guidGenerator(5)` as default value before
     // @todo but it calculates once, so all the annotations have the same pk
@@ -27,16 +47,19 @@ export const Annotation = types
     pk: types.maybeNull(types.string),
 
     selected: types.optional(types.boolean, false),
-    type: types.enumeration(["annotation", "prediction", "history"]),
+    type: types.enumeration(['annotation', 'prediction', 'history']),
 
     createdDate: types.optional(types.string, Utils.UDate.currentISODate()),
     createdAgo: types.maybeNull(types.string),
-    createdBy: types.optional(types.string, "Admin"),
+    createdBy: types.optional(types.string, 'Admin'),
     user: types.optional(types.maybeNull(types.safeReference(UserExtended)), null),
 
     parent_prediction: types.maybeNull(types.integer),
     parent_annotation: types.maybeNull(types.integer),
     last_annotation_history: types.maybeNull(types.integer),
+
+    comment_count: types.maybeNull(types.integer),
+    unresolved_comment_count: types.maybeNull(types.integer),
 
     loadedDate: types.optional(types.Date, () => new Date()),
     leadTime: types.maybeNull(types.number),
@@ -53,28 +76,62 @@ export const Annotation = types
     ground_truth: types.optional(types.boolean, false),
     skipped: false,
 
-    history: types.optional(TimeTraveller, { targetPath: "../areas" }),
+    // This field stores all data that affects undo/redo history
+    // It should contain real objects to be able to work with them through snapshots
+    // Annotation will use getters to get them at the top level
+    // This data is never redefined directly, it's empty at the start
+    trackedState: types.optional(TrackedState, {}),
+    history: types.optional(TimeTraveller, { targetPath: '../trackedState' }),
 
     dragMode: types.optional(types.boolean, false),
 
     editable: types.optional(types.boolean, true),
+    readonly: types.optional(types.boolean, false),
 
     relationMode: types.optional(types.boolean, false),
-    relationStore: types.optional(RelationStore, {
-      relations: [],
-    }),
-
-    areas: types.map(Area),
 
     suggestions: types.map(Area),
 
     regionStore: types.optional(RegionStore, {
       regions: [],
     }),
+
+    isDrawing: types.optional(types.boolean, false),
+
+    commentStore: types.optional(CommentStore, {
+      comments: [],
+    }),
+
+    ...(isFF(FF_DEV_3391) ? { root: Types.allModelsTypes() } : {}),
   })
+  .views(self => ({
+    get areas() {
+      return self.trackedState.areas;
+    },
+    get relationStore() {
+      return self.trackedState.relationStore;
+    },
+  }))
   .preProcessSnapshot(sn => {
     // sn.draft = Boolean(sn.draft);
     let user = sn.user ?? sn.completed_by ?? undefined;
+    let root;
+
+    const updateIds = item => {
+      const children = item.children?.map(updateIds);
+
+      if (children) item = { ...item, children };
+      if (item.id) item = { ...item, id: (item.name ?? item.id) + '@' + sn.id };
+      // @todo fallback for tags with name as id:
+      // if (item.name) item = { ...item, name: item.name + "@" + sn.id };
+      // @todo soon no such tags should left
+
+      return item;
+    };
+
+    if (isFF(FF_DEV_3391)) {
+      root = updateIds(sn.root.toJSON());
+    }
 
     if (user && typeof user !== 'number') {
       user = user.id;
@@ -82,12 +139,29 @@ export const Annotation = types
 
     return {
       ...sn,
+      ...(isFF(FF_DEV_3391) ? { root } : {}),
       user,
+      editable: sn.editable ?? (sn.type === 'annotation'),
       ground_truth: sn.honeypot ?? sn.ground_truth ?? false,
       skipped: sn.skipped || sn.was_cancelled,
       acceptedState: sn.accepted_state ?? sn.acceptedState ?? null,
     };
   })
+  .views(self => isFF(FF_DEV_3391)
+    ? {}
+    : {
+      get root() {
+        return self.list.root;
+      },
+
+      get names() {
+        return self.list.names;
+      },
+
+      get toNames() {
+        return self.list.toNames;
+      },
+    })
   .views(self => ({
     get store() {
       return getRoot(self);
@@ -97,30 +171,27 @@ export const Annotation = types
       return getParent(self, 2);
     },
 
-    get root() {
-      return self.list.root;
-    },
-
-    get names() {
-      return self.list.names;
-    },
-
-    get toNames() {
-      return self.list.toNames;
-    },
-
     get objects() {
-      return Array.from(self.names.values()).filter(tag => !tag.toname);
+      // Without correct validation toname may be null for control tags so we need to check isObjectTag instead of it
+      return Array.from(self.names.values()).filter(
+        isFF(FF_DEV_1598)
+          ? tag => tag.isObjectTag
+          : tag => !tag.toname,
+      );
     },
 
     get regions() {
       return Array.from(self.areas.values());
     },
 
+    get lastSelectedRegion() {
+      return self.selectedRegions[self.selectedRegions.length - 1];
+    },
+
     get results() {
       const results = [];
 
-      self.areas.forEach(a => a.results.forEach(r => results.push(r)));
+      if (isAlive(self)) self.areas.forEach(a => a.results.forEach(r => results.push(r)));
       return results;
     },
 
@@ -131,7 +202,7 @@ export const Annotation = types
       return self.results
         .map(r => r.serialize())
         .filter(Boolean)
-        .concat(self.relationStore.serializeAnnotation());
+        .concat(self.relationStore.serialize());
     },
 
     get serializedSelection() {
@@ -167,6 +238,10 @@ export const Annotation = types
       return Array.from(self.regionStore.selection.selected.values());
     },
 
+    get selectedDrawingRegions() {
+      return Array.from(self.regionStore.selection.drawingSelected.values());
+    },
+
     // existing annotation which can be updated
     get exists() {
       const dataExists = (self.userGenerate && self.sentUserGenerate) || isDefined(self.versions.result);
@@ -175,10 +250,14 @@ export const Annotation = types
       return dataExists && pkExists;
     },
 
-    get onlyTextObjects() {
-      return self.objects.reduce((res, obj) => {
-        return res && ['text', 'hypertext', 'paragraphs'].includes(obj.type);
-      }, true);
+    get hasSuggestionsSupport() {
+      return self.objects.some((obj) => {
+        return obj.supportSuggestions;
+      });
+    },
+
+    isReadOnly() {
+      return self.readonly || !self.editable;
     },
   }))
   .volatile(() => ({
@@ -187,18 +266,44 @@ export const Annotation = types
     draftSelected: false,
     autosaveDelay: 5000,
     isDraftSaving: false,
+    // This flag indicates that we are accepting suggestions right now (an accepting is started and not finished yet)
+    isSuggestionsAccepting: false,
+    submissionStarted: 0,
     versions: {},
-    resultSnapshot: "",
+    resultSnapshot: '',
   }))
+  .volatile(() => isFF(FF_DEV_3391)
+    ? {
+      names: new Map(),
+      toNames: new Map(),
+      ids: new Map(),
+    }
+    : {})
   .actions(self => ({
-    reinitHistory() {
-      self.history.reinit();
+    reinitHistory(force = true) {
+      self.history.reinit(force);
       self.autosave && self.autosave.cancel();
-      if (self.type === "annotation") self.setInitialValues();
+      if (self.type === 'annotation') self.setInitialValues();
     },
 
     setEdit(val) {
       self.editable = val;
+    },
+
+    setReadonly(val) {
+      self.readonly = val;
+    },
+
+    setIsDrawing(isDrawing) {
+      self.isDrawing = isDrawing;
+    },
+
+    setUnresolvedCommentCount(val) {
+      self.unresolved_comment_count = val;
+    },
+
+    setCommentCount(val) {
+      self.comment_count = val;
     },
 
     setGroundTruth(value, ivokeEvent = true) {
@@ -235,7 +340,7 @@ export const Annotation = types
 
     updatePersonalKey(value) {
       self.pk = value;
-      getRoot(self).addAnnotationToTaskHistory(self.pk);
+      getRoot(self).addAnnotationToTaskHistory?.(self.pk);
     },
 
     toggleVisibility(visible) {
@@ -277,6 +382,12 @@ export const Annotation = types
     unselectAreas() {
       if (!self.selectionSize) return;
       self.regionStore.clearSelection();
+    },
+
+    hideSelectedRegions() {
+      self.selectedRegions.forEach(region => {
+        region.toggleHidden();
+      });
     },
 
     deleteSelectedRegions() {
@@ -322,8 +433,22 @@ export const Annotation = types
     deleteAllRegions({ deleteReadOnly = false } = {}) {
       let regions = Array.from(self.areas.values());
 
-      // @todo classifiactions have `readonly===undefined` so they won't be deleted with `false`
-      // @todo check this later for consistency
+      // remove everything unconditionally
+      if (deleteReadOnly && isFF(FF_LSDV_4832)) {
+        self.unselectAll(true);
+        self.setIsDrawing(false);
+        self.relationStore.deleteAllRelations();
+
+        regions.forEach(r => {
+          r.destroyRegion?.();
+          destroy(r);
+        });
+
+        self.updateObjects();
+
+        return;
+      }
+
       if (deleteReadOnly === false) regions = regions.filter(r => r.readonly === false);
 
       regions.forEach(r => r.deleteRegion());
@@ -337,16 +462,6 @@ export const Annotation = types
         self.addRelation(reg);
         self.stopRelationMode();
       }
-    },
-
-    loadRegionState(region) {
-      region.states &&
-        region.states.forEach(s => {
-          const mainViewTag = self.names.get(s.name);
-
-          mainViewTag.unselectAll && mainViewTag.unselectAll();
-          mainViewTag.copyState(s);
-        });
     },
 
     unloadRegionState(region) {
@@ -367,16 +482,14 @@ export const Annotation = types
       let ok = true;
 
       self.traverseTree(function(node) {
-        if (node.required === true) {
-          ok = node.validate();
-          if (ok === false) {
-            ok = false;
-            return TRAVERSE_STOP;
-          }
+        ok = node.validate?.();
+        if (ok === false) {
+          return TRAVERSE_STOP;
         }
       });
 
-      return ok;
+      // should be true or false
+      return ok ?? true;
     },
 
     traverseTree(cb) {
@@ -402,6 +515,8 @@ export const Annotation = types
      * @param {*} region
      */
     deleteRegion(region) {
+      if (region.isReadOnly()) return;
+
       const { regions } = self.regionStore;
       // move all children into the parent region of the given one
       const children = regions.filter(r => r.parentID === region.id);
@@ -411,11 +526,16 @@ export const Annotation = types
       if (!region.classification) getEnv(self).events.invoke('entityDelete', region);
 
       self.relationStore.deleteNodeRelation(region);
-      if (region.type === "polygonregion") {
+
+      if (region.type === 'polygonregion') {
         detach(region);
       }
 
       destroy(region);
+
+      // If the annotation was in a drawing state and the user deletes it, we need to reset the drawing state
+      // to avoid the user being stuck in a drawing state
+      self.setIsDrawing(false);
     },
 
     deleteArea(area) {
@@ -426,10 +546,23 @@ export const Annotation = types
       const { history, regionStore } = self;
 
       if (history && history.canUndo) {
+        let stopDrawingAfterNextUndo = false;
         const selectedIds = regionStore.selectedIds;
+        const currentRegion = regionStore.findRegion(selectedIds[selectedIds.length - 1] ?? regionStore.regions[regionStore.regions.length - 1]?.id);
+
+        if (currentRegion?.type === 'polygonregion') {
+          const points = currentRegion?.points?.length ?? 0;
+
+          stopDrawingAfterNextUndo = points <= 1;
+        }
 
         history.undo();
         regionStore.selectRegionsByIds(selectedIds);
+
+        if (stopDrawingAfterNextUndo) {
+          currentRegion.setDrawing(false);
+          self.setIsDrawing(false);
+        }
       }
     },
 
@@ -444,17 +577,29 @@ export const Annotation = types
       }
     },
 
-    // update some fragile parts after snapshot manipulations (undo/redo)
-    updateObjects() {
-      self.unselectAll();
+    /**
+     * update some fragile parts after snapshot manipulations (undo/redo)
+     *
+     * @param {boolean} [force=true] force update will unselect all regions
+     */
+    updateObjects(force = true) {
+      // Some async or lazy mode operations (ie. Images lazy load) need to reinitHistory without removing state selections
+      if (force) self.unselectAll();
+
       self.names.forEach(tag => tag.needsUpdate && tag.needsUpdate());
       self.areas.forEach(area => area.updateAppearenceFromState && area.updateAppearenceFromState());
+      if (isFF(FF_DEV_2432)) {
+        const areas = Array.from(self.areas.values());
+        const filtered = areas.filter(area => area.isDrawing);
+
+        self.regionStore.selection._updateResultsFromRegions(filtered);
+      }
     },
 
     setInitialValues() {
       // <Label selected="true"/>
       self.names.forEach(tag => {
-        if (tag.type.endsWith("labels")) {
+        if (tag.type.endsWith('labels')) {
           // @todo check for choice="multiple" and multiple preselected labels
           const preselected = tag.children?.find(label => label.initiallySelected);
 
@@ -467,9 +612,9 @@ export const Annotation = types
 
     setDefaultValues() {
       self.names.forEach(tag => {
-        if (isFF(FF_DEV_2100_A) && tag?.type === "choices" && tag.preselectedValues?.length) {
+        if (['choices', 'taxonomy'].includes(tag?.type) && tag.preselectedValues?.length) {
           // <Choice selected="true"/>
-          self.createResult({}, { choices: tag.preselectedValues }, tag, tag.toname);
+          self.createResult({}, { [tag?.type]: tag.preselectedValues }, tag, tag.toname);
         }
       });
     },
@@ -506,13 +651,14 @@ export const Annotation = types
       self.startAutosave();
     },
 
-    async startAutosave() {
+    startAutosave: flow(function *() {
       if (!getEnv(self).events.hasEvent('submitDraft')) return;
-      if (self.type !== "annotation") return;
+      // view all must never trigger autosave
+      if (self.isReadOnly()) return;
 
       // some async tasks should be performed after deserialization
       // so start autosave on next tick
-      await delay(0);
+      yield delay(0);
 
       if (self.autosave) {
         self.autosave.cancel();
@@ -523,24 +669,54 @@ export const Annotation = types
       // mobx will modify methods, so add it directly to have cancel() method
       self.autosave = throttle(
         () => {
+          // if autosave is paused, do nothing
           if (self.autosave.paused) return;
 
-          const result = self.serializeAnnotation({ fast: true });
-          // if this is new annotation and no regions added yet
-
-          if (!self.pk && !result.length) return;
-
-          self.setDraftSelected();
-          self.versions.draft = result;
-          self.setDraftSaving(true);
-
-          self.store.submitDraft(self).then(self.onDraftSaved);
+          self.saveDraft();
         },
         self.autosaveDelay,
         { leading: false },
       );
 
       onSnapshot(self.areas, self.autosave);
+    }),
+
+    async saveDraft(params) {
+      // There is no draft to save as it was already saved as an annotation
+      if (self.submissionStarted) return;
+      // if this is now a history item or prediction don't save it
+      if (!self.editable) return;
+
+      const result = self.serializeAnnotation({ fast: true });
+      // if this is new annotation and no regions added yet
+
+      if (!isFF(FF_LSDV_3009) && !self.pk && !result.length) return;
+
+      self.setDraftSelected();
+      self.versions.draft = result;
+      self.setDraftSaving(true);
+      return self.store.submitDraft(self, params).then((res) => {
+        self.onDraftSaved(res);
+
+        return res;
+      });
+    },
+
+    submissionInProgress() {
+      self.submissionStarted = Date.now();
+    },
+
+    saveDraftImmediately() {
+      if (self.autosave) self.autosave.flush();
+    },
+
+    async saveDraftImmediatelyWithResults(params) {
+      // There is no draft to save as it was already saved as an annotation
+      if (self.submissionStarted || self.isDraftSaving) return {};
+      self.setDraftSaving(true);
+      const res = await self.saveDraft(params);
+
+      return res;
     },
 
     pauseAutosave() {
@@ -562,7 +738,7 @@ export const Annotation = types
     },
 
     onDraftSaved() {
-      self.draftSaved = Utils.UDate.currentISODate();
+      self.setDraftSaved(Utils.UDate.currentISODate());
       self.setDraftSaving(false);
     },
 
@@ -579,6 +755,10 @@ export const Annotation = types
       self.isDraftSaving = saving;
     },
 
+    setDraftSaved(date) {
+      self.draftSaved = date;
+    },
+
     afterAttach() {
       self.traverseTree(node => {
         // called when the annotation is attached to the main store,
@@ -586,26 +766,6 @@ export const Annotation = types
         // may come handy when you have a tag that acts or depends
         // on other elements in the tree.
         if (node.annotationAttached) node.annotationAttached();
-
-        // copy tools from control tags into object tools manager
-        // [DOCS] each object tag may have an assigned tools
-        // manager. This assignment may happen because user asked
-        // for it through the config, or because the attached
-        // control tags are complex and require additional UI
-        // interfaces. Each control tag defines a set of tools it
-        // supports
-        if (node && node.getToolsManager) {
-          const tools = node.getToolsManager();
-          const states = self.toNames.get(node.name);
-
-          states && states.forEach(s => tools.addToolsFromControl(s));
-        }
-
-        // @todo special place to init such predefined values; `afterAttach` of the tag?
-        // preselected choices
-        if (!isFF(FF_DEV_2100_A) && !self.pk && node?.type === "choices" && node.preselectedValues?.length) {
-          self.createResult({}, { choices: node.preselectedValues }, node, node.toname);
-        }
       });
 
       self.history.onUpdate(self.updateObjects);
@@ -613,6 +773,23 @@ export const Annotation = types
     },
 
     afterCreate() {
+      if (isFF(FF_DEV_3391)) {
+        const { names, toNames } = Tree.extractNames(self.root);
+
+        names.forEach((tag, name) => self.names.set(name, tag));
+        toNames.forEach((tags, name) => self.toNames.set(name, tags));
+
+        Tree.traverseTree(self.root, node => {
+          const id = node.id ?? node.name;
+
+          if (id) {
+            self.ids.set(Tree.cleanUpId(id), node);
+          }
+
+          if (self.store.task && node.updateValue) node.updateValue(self.store);
+        });
+      }
+
       if (self.userGenerate && !self.sentUserGenerate) {
         self.loadedDate = new Date();
       }
@@ -623,7 +800,7 @@ export const Annotation = types
 
       let audiosNum = 0;
       let audioNode = null;
-      const mod = "shift+space";
+      const mod = 'shift+space';
       let comb = mod;
 
       // [TODO] we need to traverse this two times, fix
@@ -637,12 +814,12 @@ export const Annotation = types
       self.traverseTree(node => {
         // add Space hotkey for playbacks of audio, there might be
         // multiple audios on the screen
-        if (node && !node.hotkey && (node.type === "audio" || node.type === "audioplus")) {
-          if (audiosNum > 0) comb = mod + "+" + (audiosNum + 1);
+        if (node && !node.hotkey && (node.type === 'audio' || node.type === 'audioplus')) {
+          if (audiosNum > 0) comb = mod + '+' + (audiosNum + 1);
           else audioNode = node;
 
           node.hotkey = comb;
-          hotkeys.addKey(comb, node.onHotKey, "Play an audio", Hotkey.DEFAULT_SCOPE + "," + Hotkey.INPUT_SCOPE);
+          hotkeys.addKey(comb, node.onHotKey, 'Play an audio', Hotkey.DEFAULT_SCOPE + ',' + Hotkey.INPUT_SCOPE);
 
           audiosNum++;
         }
@@ -663,7 +840,7 @@ export const Annotation = types
       });
 
       if (audioNode && audiosNum > 1) {
-        audioNode.hotkey = mod + "+1";
+        audioNode.hotkey = mod + '+1';
         hotkeys.addKey(audioNode.hotkey, audioNode.onHotKey);
         hotkeys.removeKey(mod);
       }
@@ -682,18 +859,25 @@ export const Annotation = types
       Hotkey.setScope(Hotkey.DEFAULT_SCOPE);
     },
 
-    createResult(areaValue, resultValue, control, object) {
+    createResult(areaValue, resultValue, control, object, skipAfrerCreate = false) {
+      // Without correct validation object may be null, but it it shouldn't be so in results - so we should find any
+      if (isFF(FF_DEV_1598) && !object && control.type === 'textarea') {
+        object = self.objects[0];
+      }
+      const objectTag = self.names.get(object.name ?? object);
+
       const result = {
-        from_name: control.name,
+        from_name: self.names.get(control.name),
         // @todo should stick to area
-        to_name: object,
+        to_name: objectTag,
         type: control.resultType,
         value: resultValue,
+        readonly: self.readonly,
       };
 
       const areaRaw = {
         id: guidGenerator(),
-        object,
+        object: objectTag,
         // data for Model instance
         ...areaValue,
         // for Model detection
@@ -701,10 +885,22 @@ export const Annotation = types
         results: [result],
       };
 
-      const area = self.areas.put(areaRaw);
+
+      // TODO: MST is crashing if we don't validate areas?, this problem isn't
+      // happening locally. So to reproduce you have to test in production or environment
+      const area = self?.areas?.put(areaRaw);
+
+      objectTag?.afterResultCreated?.(area);
+
+      if (!area) return;
 
       if (!area.classification) getEnv(self).events.invoke('entityCreate', area);
+      if (!skipAfrerCreate) self.afterCreateResult(area, control);
 
+      return area;
+    },
+
+    afterCreateResult(area, control) {
       if (self.store.settings.selectAfterCreate) {
         if (!area.classification) {
           // some regions might need some actions right after creation (i.e. text)
@@ -712,19 +908,19 @@ export const Annotation = types
           setTimeout(() => isAlive(area) && self.selectArea(area));
         }
       } else {
-        // unselect labels after use, but consider "keep labels selected" settings
-        if (control.type.includes("labels")) self.unselectAll(true);
+        // unselect labeling tools after use, but consider "keep labels selected" settings
+        if (control.isLabeling) self.unselectAll(true);
       }
-
-      return area;
     },
 
     appendResults(results) {
+      if (!self.editable || self.readonly) return;
+
       const regionIdMap = {};
       const prevSize = self.regionStore.regions.length;
 
       // Generate new ids to prevent collisions
-      results.forEach((result)=>{
+      results.forEach((result) => {
         const regionId = result.id;
 
         if (!regionIdMap[regionId]) {
@@ -741,14 +937,14 @@ export const Annotation = types
     serializeAnnotation(options) {
       // return self.serialized;
 
-      document.body.style.cursor = "wait";
+      document.body.style.cursor = 'wait';
 
       const result = self.results
         .map(r => r.serialize(options))
         .filter(Boolean)
-        .concat(self.relationStore.serializeAnnotation(options));
+        .concat(self.relationStore.serialize(options));
 
-      document.body.style.cursor = "default";
+      document.body.style.cursor = 'default';
 
       return result;
     },
@@ -757,30 +953,32 @@ export const Annotation = types
     // And this problems are fixable, so better to fix them on start
     fixBrokenAnnotation(json) {
       return (json ?? []).reduce((res, objRaw) => {
-        const obj = JSON.parse(JSON.stringify(objRaw));
+        const obj = structuredClone(objRaw) ?? {};
 
         if (obj.type === 'relation') {
           res.push(objRaw);
           return res;
         }
 
-        if (obj.type === "htmllabels") obj.type = "hypertextlabels";
+        if (obj.type === 'htmllabels') obj.type = 'hypertextlabels';
         if (obj.normalization) obj.meta = { ...obj.meta, text: [obj.normalization] };
         const tagNames = self.names;
 
         // Clear non-existent labels
-        if (obj.type.endsWith("labels")) {
+        if (obj.type.endsWith('labels')) {
           const keys = Object.keys(obj.value);
 
           for (let key of keys) {
-            if (key.endsWith("labels")) {
-              const hasControlTag = tagNames.has(obj.from_name) || tagNames.has("labels");
+            if (key.endsWith('labels')) {
+              const hasControlTag = tagNames.has(obj.from_name) || tagNames.has('labels');
 
-              if (hasControlTag) {
-                const labelsContainer = tagNames.get(obj.from_name) ?? tagNames.get("labels");
+              // remove non-existent labels, it actually breaks dynamic labels
+              // and makes no reason overall — labels from predictions can be out of config
+              if (!isFF(FF_LSDV_4988) && hasControlTag) {
+                const labelsContainer = tagNames.get(obj.from_name) ?? tagNames.get('labels');
                 const value = obj.value[key];
 
-                if (value && value.length && labelsContainer.type.endsWith("labels")) {
+                if (value && value.length && labelsContainer.type.endsWith('labels')) {
                   const filteredValue = value.filter(labelName => !!labelsContainer.findLabel(labelName));
                   const oldKey = key;
 
@@ -798,6 +996,9 @@ export const Annotation = types
                 }
               }
 
+              // detect most relevant label tags if that one from from_name is missing
+              // can be useful for predictions in old format with config in new format:
+              // Rectangle + Labels -> RectangleLabels
               if (
                 !tagNames.has(obj.from_name) ||
                 (!obj.value[key].length && !tagNames.get(obj.from_name).allowempty)
@@ -809,9 +1010,9 @@ export const Annotation = types
                   const states = targetObject.states();
 
                   if (states?.length) {
-                    const altToolsControllerType = obj.type.replace(/labels$/, "");
+                    const altToolsControllerType = obj.type.replace(/labels$/, '');
                     const sameLabelsType = obj.type;
-                    const simpleLabelsType = "labels";
+                    const simpleLabelsType = 'labels';
 
                     for (const altType of [altToolsControllerType, sameLabelsType, simpleLabelsType]) {
                       const state = states.find(state => state.type === altType);
@@ -832,34 +1033,69 @@ export const Annotation = types
         if (tagNames.has(obj.from_name) && tagNames.has(obj.to_name)) {
           res.push(obj);
         }
+        
+        // Insert image dimensions from result 
+        (() => {
+          if (!isDefined(obj.original_width)) return;
+          if (!tagNames.has(obj.to_name)) return;
+
+          const tag = tagNames.get(obj.to_name);
+
+          if (tag.type !== 'image') return;
+
+          const imageEntity = tag.findImageEntity(obj.item_index ?? 0); 
+
+          if (!imageEntity) return;
+
+          imageEntity.setNaturalWidth(obj.original_width);
+          imageEntity.setNaturalHeight(obj.original_height);
+        })();
 
         return res;
       }, []);
     },
 
     setSuggestions(rawSuggestions) {
+      const { history } = self;
+
       self.suggestions.clear();
 
+      if (!rawSuggestions) return;
       self.deserializeResults(rawSuggestions, {
         suggestions: true,
       });
 
+      self.isSuggestionsAccepting = true;
       if (getRoot(self).autoAcceptSuggestions) {
+        if (isFF(FF_DEV_1284)) {
+          self.history.setReplaceNextUndoState(true);
+        }
         self.acceptAllSuggestions();
       } else {
         self.suggestions.forEach((suggestion) => {
-          if (['richtextregion', 'text', 'textrange'].includes(suggestion.type)) {
+          // regions that can't be accepted in usual way, should be auto-accepted;
+          const supportSuggestions = suggestion.supportSuggestions;
+
+          // If we cannot display suggestions on object/control then just accept them
+          if (!supportSuggestions) {
             self.acceptSuggestion(suggestion.id);
+            if (isFF(FF_DEV_1284)) {
+              // This is necessary to prevent the occurrence of new steps in the history after updating objects at the end of current method
+              history.setReplaceNextUndoState(true);
+            }
           }
         });
       }
+      self.isSuggestionsAccepting = false;
 
-      const { history } = self;
-
-      history.freeze("richtext:suggestions");
-      self.objects.forEach(obj => obj.needsUpdate?.({ suggestions: true }));
-      history.setReplaceNextUndoState(true);
-      history.unfreeze("richtext:suggestions");
+      if (!isFF(FF_DEV_1284)) {
+        history.freeze('richtext:suggestions');
+      }
+      self.names.forEach(tag => tag.needsUpdate?.({ suggestions: true }));
+      if (!isFF(FF_DEV_1284)) {
+        history.setReplaceNextUndoState(true);
+        history.unfreeze('richtext:suggestions');
+      }
     },
 
     cleanClassificationAreas() {
@@ -868,12 +1104,15 @@ export const Annotation = types
 
       self.areas.forEach(a => {
         const controlName = a.results[0].from_name.name;
+        // May be null but null is also valid key in this case
+        const itemIndex = a.item_index;
 
         if (a.classification) {
-          if (classificationAreasByControlName[controlName]) {
-            duplicateAreaIds.push(classificationAreasByControlName[controlName]);
+          if (classificationAreasByControlName[controlName]?.[itemIndex]) {
+            duplicateAreaIds.push(classificationAreasByControlName[controlName][itemIndex]);
           }
-          classificationAreasByControlName[controlName] = a.id;
+          classificationAreasByControlName[controlName] = classificationAreasByControlName[controlName] || {};
+          classificationAreasByControlName[controlName][itemIndex] = a.id;
         }
       });
       duplicateAreaIds.forEach(id => self.areas.delete(id));
@@ -908,7 +1147,7 @@ export const Annotation = types
           .forEach(r => r.from_name.updateFromResult?.(r.mainValue));
 
         objAnnotation.forEach(obj => {
-          if (obj["type"] === "relation") {
+          if (obj['type'] === 'relation') {
             self.relationStore.deserializeRelation(
               `${obj.from_id}#${self.id}`,
               `${obj.to_id}#${self.id}`,
@@ -931,7 +1170,7 @@ export const Annotation = types
     prepareAnnotation(rawAnnotation) {
       let objAnnotation = rawAnnotation;
 
-      if (typeof objAnnotation !== "object") {
+      if (typeof objAnnotation !== 'object') {
         objAnnotation = JSON.parse(objAnnotation);
       }
 
@@ -941,58 +1180,84 @@ export const Annotation = types
     },
 
     deserializeSingleResult(obj, getArea, createArea) {
-      if (obj["type"] !== "relation") {
+      if (obj['type'] !== 'relation') {
         const { id, value: rawValue, type, ...data } = obj;
+        let { from_name, to_name } = data;
 
-        const object = self.names.get(obj.to_name) ?? {};
+        const object = self.names.get(data.to_name) ?? {};
         const tagType = object.type;
 
         // avoid duplicates of the same areas in different annotations/predictions
         const areaId = `${id || guidGenerator()}#${self.id}`;
         const resultId = `${data.from_name}@${areaId}`;
         const value = self.prepareValue(rawValue, tagType);
+        // This should fix a problem when the order of results is broken
+        const omitValueFields = (value) => {
+          const newValue = { ...value };
+
+          Result.properties.value.propertyNames.forEach(propName => {
+            delete newValue[propName];
+          });
+          return newValue;
+        };
+
+        if (isFF(FF_DEV_3391)) {
+          to_name = `${to_name}@${self.id}`;
+          from_name = `${from_name}@${self.id}`;
+        }
 
         let area = getArea(areaId);
 
         if (!area) {
           const areaSnapshot = {
             id: areaId,
-            object: data.to_name,
+            object: to_name,
             ...data,
-            ...value,
+            // We need to omit value properties due to there may be conflicting property types, for example a text.
+            ...omitValueFields(value),
             value,
           };
 
           area = createArea(areaSnapshot);
+
+          if (isFF(FF_LSDV_4583)) {
+            // store copy of the original result inside the area
+            // useful when you need to serialize a result without
+            // updating it from current/actual data
+            // For safety reasons this object is always readonly
+            Object.defineProperty(area, '_rawResult', {
+              value: Object.freeze(structuredClone(obj)),
+            });
+          }
         }
 
-        area.addResult({ ...data, id: resultId, type, value });
+        area.addResult({ ...data, id: resultId, type, value, from_name, to_name });
 
         // if there is merged result with region data and type and also with the labels
         // and object allows such merge — create new result with these labels
-        if (!type.endsWith("labels") && value.labels && object.mergeLabelsAndResults) {
+        if (!type.endsWith('labels') && value.labels && object.mergeLabelsAndResults) {
           const labels = value.labels;
           const labelControl = object.states()?.find(control => control?.findLabel(labels[0]));
 
           area.setValue(labelControl);
-          area.results.find(r => r.type.endsWith("labels"))?.setValue(labels);
+          area.results.find(r => r.type.endsWith('labels'))?.setValue(labels);
         }
       }
     },
 
     prepareValue(value, type) {
       switch (type) {
-        case "text":
-        case "hypertext":
-        case "richtext": {
+        case 'text':
+        case 'hypertext':
+        case 'richtext': {
           const hasStartEnd = isDefined(value.start) && isDefined(value.end);
           const lacksOffsets = !isDefined(value.startOffset) && !isDefined(value.endOffset);
 
           // @todo move this Text regions offsets transform to RichTextRegion
           if (hasStartEnd && lacksOffsets) {
             return Object.assign({}, value, {
-              start: "",
-              end: "",
+              start: '',
+              end: '',
               startOffset: Number(value.start),
               endOffset: Number(value.end),
               isText: true,
@@ -1011,36 +1276,77 @@ export const Annotation = types
       Array.from(self.suggestions.keys()).forEach((id) => {
         self.acceptSuggestion(id);
       });
-      self.deleteAllDynamicregions();
+      self.deleteAllDynamicregions(isFF(FF_DEV_1284));
     },
 
     rejectAllSuggestions() {
       Array.from(self.suggestions.keys).forEach((id) => {
         self.suggestions.delete(id);
       });
-      self.deleteAllDynamicregions();
+      self.deleteAllDynamicregions(isFF(FF_DEV_1284));
     },
 
-    deleteAllDynamicregions() {
+    deleteAllDynamicregions(silent = false) {
       self.regions.forEach(r => {
-        r.dynamic && r.deleteRegion();
+        if (r.dynamic) {
+          if (silent) {
+            // dirty hack to prevent sending regionFinishedDrawing notification
+            r.setDrawing(true);
+          }
+          r.deleteRegion();
+        }
       });
     },
 
     acceptSuggestion(id) {
       const item = self.suggestions.get(id);
+      let itemId = id;
+      const isGlobalClassification = item.classification;
 
-      self.areas.set(id, {
+      // this piece of code prevents from creating duplicated global classifications
+      if (isFF(FF_LLM_EPIC)) {
+        if (isGlobalClassification) {
+          const itemResult = item.results[0];
+          const areasIterator = self.areas.values();
+
+          for (const area of areasIterator) {
+            const areaResult = area.results[0];
+            const isFound = areaResult.from_name === itemResult.from_name
+              && areaResult.to_name === itemResult.to_name
+              && areaResult.item_index === itemResult.item_index;
+
+            if (isFound) {
+              itemId = area.id;
+              break;
+            }
+          }
+        } else {
+          // @todo: there is a strange behaviour that should be documented somewhere
+          // On serialization we use area id as result id to save it somewhere
+          // and on deserialization we use result id as area id
+          // but when we use suggestions we should keep in mind that we need to do it manually or use serialized data instead
+          // or we can get weird regions duplication in some cases
+          const area = self.areas.get(item.cleanId);
+
+          if (area) {
+            itemId = area.id;
+          }
+        }
+      }
+
+      self.areas.set(itemId, {
         ...item.toJSON(),
+        id: itemId,
         fromSuggestion: true,
       });
-      const area = self.areas.get(id);
+      const area = self.areas.get(itemId);
       const activeStates = area.object.activeStates();
 
       activeStates.forEach(state => {
         area.setValue(state);
       });
       self.suggestions.delete(id);
+      
     },
 
     rejectSuggestion(id) {

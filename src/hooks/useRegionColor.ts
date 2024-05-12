@@ -1,9 +1,9 @@
-import chroma from "chroma-js";
-import { observe } from "mobx";
-import { useContext, useEffect, useMemo, useState } from "react";
-import { ImageViewContext } from "../components/ImageView/ImageViewContext";
-import Constants, { defaultStyle } from "../core/Constants";
-import { isDefined } from "../utils/utilities";
+import chroma from 'chroma-js';
+import { observe } from 'mobx';
+import { useContext, useEffect, useMemo, useState } from 'react';
+import { ImageViewContext } from '../components/ImageView/ImageViewContext';
+import Constants, { defaultStyle } from '../core/Constants';
+import { isDefined } from '../utils/utilities';
 
 const defaultStyles = {
   defaultOpacity: defaultStyle.opacity,
@@ -22,6 +22,7 @@ type StyleOptions = (typeof defaultStyles) & {
   suggestion?: boolean,
   includeFill?: boolean,
   useStrokeAsFill?: boolean,
+  sameStrokeWidthForSelected?: boolean,
 }
 
 export const getRegionStyles = ({
@@ -29,6 +30,7 @@ export const getRegionStyles = ({
   highlighted = false,
   shouldFill = false,
   useStrokeAsFill = false,
+  sameStrokeWidthForSelected = false,
   suggestion = false,
   defaultOpacity = defaultStyle.opacity,
   defaultFillColor = defaultStyle.fillcolor,
@@ -59,7 +61,7 @@ export const getRegionStyles = ({
   const strokeWidth = (() => {
     if (suggestion) {
       return defaultSuggestionWidth;
-    } else if (selected) {
+    } else if (selected && !sameStrokeWidthForSelected) {
       return defaultStrokeWidthHighlighted;
     } else {
       return +(style?.strokewidth ?? defaultStrokeWidth);
@@ -97,7 +99,7 @@ export const useRegionStyles = (region: any, options: Partial<StyleOptions> = {}
     ].map(prop => {
       try {
         return observe(region, prop, ({ newValue }) => {
-          switch(prop) {
+          switch (prop) {
             case 'highlighted': return setHighlighted(newValue);
             case 'fill': return setShouldFill(newValue);
           }
