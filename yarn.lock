@@ -3955,8 +3955,9 @@
   integrity sha512-dRLjCWHYg4oaA77cxO64oO+7JwCwnIzkZPdrrC71jQmQtlhM556pwKo5bUzqvZndkVbeFLIIi+9TC40JNF5hNQ==
 
 "@types/keymaster@^1.6.30":
-  version "1.6.30"
-  resolved "https://registry.yarnpkg.com/@types/keymaster/-/keymaster-1.6.30.tgz#11c3d8b9cb05f207816b77b9621afc6ec8ad01be"
+  version "1.6.33"
+  resolved "https://registry.yarnpkg.com/@types/keymaster/-/keymaster-1.6.33.tgz#2a96eeceed9bb24e43c270e6d038352a44502efd"
+  integrity sha512-J+dF4hsKaq+L5Ny6alxNC2XwJbONGmVbXmycH/GrlBAzTdYJJcG9kQ0PVVb/C6iFyujFY7J2oW+0Y8h5vtuACA==
 
 "@types/linkify-it@*":
   version "3.0.2"
