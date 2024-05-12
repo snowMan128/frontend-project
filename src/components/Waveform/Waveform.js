@@ -16,6 +16,9 @@ import { Tooltip } from '../../common/Tooltip/Tooltip';
 const MIN_ZOOM_Y = 1;
 const MAX_ZOOM_Y = 50;
 
+const MIN_ZOOM_Y = 1;
+const MAX_ZOOM_Y = 50;
+
 /**
  * Use formatTimeCallback to style the notch labels as you wish, such
  * as with more detail as the number of pixels per second increases.
@@ -184,7 +187,6 @@ export default class Waveform extends React.Component {
   updateZoomY = throttle(() => {
     this.wavesurfer.params.barHeight = this.state.zoomY;
     this.wavesurfer.drawBuffer();
-  }, 100);
 
   onChangeVolume = value => {
     this.setState({
@@ -289,8 +291,7 @@ export default class Waveform extends React.Component {
       progressColor: this.state.colors.progressColor,
 
       splitChannels: true,
-      cursorWidth: this.props.cursorWidth,
-      cursorColor: this.props.cursorColor,
+
       barHeight: 1,
     };
 
@@ -489,13 +490,7 @@ export default class Waveform extends React.Component {
         <div id="timeline" />
 
         {this.props.zoom && (
-          <Row gutter={16} style={{ marginTop: '1em' }}>
-            <Col flex={8} style={{ textAlign: 'right', marginTop: '6px' }}>
-              <div style={{ display: 'flex' }}>
-                <div style={{ marginTop: '6px', marginRight: '5px' }}>
-                  <Tooltip placement="topLeft" title="Horizontal zoom out">
-                    <ZoomOutOutlined onClick={this.onZoomMinus} className={globalStyles.link} />
-                  </Tooltip>
+
                 </div>
                 <div style={{ width: '100%' }}>
                   <Slider
@@ -537,6 +532,27 @@ export default class Waveform extends React.Component {
                   <Tooltip placement="topLeft" title="Vertical zoom in">
                     <ZoomInOutlined onClick={this.onZoomYPlus} className={globalStyles.link} />
                   </Tooltip>
+                </div>
+              </div>
+            </Col>
+            <Col flex={4} style={{ textAlign: "right", marginTop: "6px" }}>
+              <div style={{ display: "flex" }}>
+                <div style={{ marginTop: "6px", marginRight: "5px" }}>
+                  <ZoomOutOutlined onClick={this.onZoomYMinus} className={globalStyles.link} />
+                </div>
+                <div style={{ width: "100%" }}>
+                  <Slider
+                    min={MIN_ZOOM_Y}
+                    step={.1}
+                    max={MAX_ZOOM_Y}
+                    value={typeof this.state.zoomY === "number" ? this.state.zoomY : MIN_ZOOM_Y}
+                    onChange={value => {
+                      this.onChangeZoomY(value);
+                    }}
+                  />
+                </div>
+                <div style={{ marginTop: "6px", marginLeft: "5px" }}>
+                  <ZoomInOutlined onClick={this.onZoomYPlus} className={globalStyles.link} />
                 </div>
               </div>
             </Col>
