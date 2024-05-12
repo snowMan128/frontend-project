@@ -345,6 +345,8 @@ Object.assign(window, {
   },
 });
 
+export const FF_DEV_2186 = "ff_front_dev_2186_comments_for_update";
+
 function getFeatureFlags() {
   return {
     ...(window.APP_SETTINGS?.feature_flags ?? {}),

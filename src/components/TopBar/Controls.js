@@ -1,12 +1,3 @@
-import { inject, observer } from 'mobx-react';
-import { Button } from '../../common/Button/Button';
-import { Tooltip } from '../../common/Tooltip/Tooltip';
-import { Block, Elem } from '../../utils/bem';
-import { isDefined } from '../../utils/utilities';
-import { IconBan } from '../../assets/icons';
-
-import './Controls.styl';
-import { useCallback, useMemo, useState } from 'react';
 
 const TOOLTIP_DELAY = 0.8;
 
@@ -159,6 +150,31 @@ export const Controls = controlsInjector(observer(({ store, history, annotation 
 
     if ((userGenerate && sentUserGenerate) || (!userGenerate && store.hasInterface('update'))) {
       const isUpdate = sentUserGenerate || versions.result;
+
+      const isRejected = store.task.queue?.includes("Rejected queue");
+      const withComments = isFF(FF_DEV_2186) || store.hasInterface("comments:update");
+      let button;
+      
+      if (withComments && isUpdate) {
+        button = (
+          <ActionDialog
+            type="update"
+            onAction={store.updateAnnotation}
+            buttonProps={{ disabled: disabled || submitDisabled, look: "primary" }}
+            prompt="Comment to Reviewer"
+            action="Update"
+          />
+        );
+      } else {
+        button = (
+          <ButtonTooltip key="update" title="Update this task: [ Alt+Enter ]">
+            <Button aria-label="submit" disabled={disabled || submitDisabled} look="primary" onClick={() => store.updateAnnotation()}>
+              {isUpdate ? "Update" : "Submit"}
+            </Button>
+          </ButtonTooltip>
+        );
+      }
+=======
       const button = (
         <ButtonTooltip key="update" title="Update this task: [ Alt+Enter ]">
           <Button aria-label="submit" disabled={disabled || submitDisabled} look="primary" onClick={async () => {
@@ -169,6 +185,7 @@ export const Controls = controlsInjector(observer(({ store, history, annotation 
           </Button>
         </ButtonTooltip>
       );
+
 
       buttons.push(button);
     }
