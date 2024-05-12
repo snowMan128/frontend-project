@@ -146,6 +146,15 @@ const AnnotationStoreModel = types
       return p;
     }
 
+    function clearDeletedParents(annotation) {
+      if (!annotation?.pk) return;
+      self.annotations.forEach(anno => {
+        if (anno.parent_annotation && +anno.parent_annotation === +annotation.pk) {
+          anno.parent_annotation = null;
+        }
+      });
+    }
+
     function deleteAnnotation(annotation) {
       getEnv(self).events.invoke('deleteAnnotation', self.store, annotation);
 
@@ -153,6 +162,11 @@ const AnnotationStoreModel = types
      * MST destroy annotation
      */
       destroy(annotation);
+      
+      /**
+       * Clear any other parent_annotations connected to this annotation
+       */
+      self.clearDeletedParents(annotation);
 
       self.selected = null;
       /**
@@ -406,7 +420,7 @@ const AnnotationStoreModel = types
         const updatedItem = item ?? self.selected;
 
         Array.from(updatedItem.names.values())
-          .filter(t => t.isClassification)
+          .filter(t => t.isClassificationTag)
           .forEach(t => t.updateFromResult([]));
 
         updatedItem?.results
@@ -531,6 +545,7 @@ const AnnotationStoreModel = types
       _unselectAll,
 
       deleteAnnotation,
+      clearDeletedParents,
       resetAnnotations,
     };
   });

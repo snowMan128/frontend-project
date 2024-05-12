@@ -1,7 +1,7 @@
 .view-controls
   top 0
   z-index 2
-  height 40px
+  height var(--view-controls-height)
   display grid
   position sticky
   padding 0 4px
@@ -15,7 +15,7 @@
   &__sort
     display flex
     align-items center
-    
+
   &__label
     width 100%
     display flex
@@ -55,7 +55,6 @@
       box-shadow none
 
   &_FF_LSDV_4992
-    height 32px
     grid-column-gap 4px
 
     .button
@@ -76,5 +75,5 @@
         padding 0px 2px !important
 
       &.dropdown__trigger
-        padding 0px 6px 0px 2px !important
+        padding 0px 6px 0px 2px
 

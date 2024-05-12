@@ -5,8 +5,8 @@ import {
   IconList,
   IconOutlinerEyeClosed,
   IconOutlinerEyeOpened,
-  IconSortDown,
-  IconSortUp,
+  IconSortDown, IconSortDownNew,
+  IconSortUp, IconSortUpNew,
   IconSpeed,
   IconTagAlt
 } from '../../../assets/icons';
@@ -31,7 +31,6 @@ export type OrderingOptions = 'score' | 'date'
 export type OrderingDirection = 'asc' | 'desc'
 
 interface ViewControlsProps {
-  grouping: GroupingOptions;
   ordering: OrderingOptions;
   orderingDirection?: OrderingDirection;
   regions: any;
@@ -41,7 +40,6 @@ interface ViewControlsProps {
 }
 
 export const ViewControls: FC<ViewControlsProps> = observer(({
-  grouping,
   ordering,
   regions,
   orderingDirection,
@@ -49,27 +47,28 @@ export const ViewControls: FC<ViewControlsProps> = observer(({
   onGroupingChange,
   onFilterChange,
 }) => {
+  const grouping = regions.group;
   const context = useContext(SidePanelsContext);
   const getGroupingLabels = useCallback((value: GroupingOptions): LabelInfo => {
-    switch(value) {
+    switch (value) {
       case 'manual': return {
         label: 'Group Manually',
-        selectedLabel: isFF(FF_DEV_3873) ? 'Manual': 'Manual Grouping',
+        selectedLabel: isFF(FF_DEV_3873) ? 'Manual' : 'Manual Grouping',
         icon: <IconList/>,
         tooltip: 'Manually Grouped',
       };
       case 'label': return {
         label: 'Group by Label',
         selectedLabel: isFF(FF_DEV_3873) ?
-          (isFF(FF_LSDV_4992) ? 'By Label' :'Label')
+          (isFF(FF_LSDV_4992) ? 'By Label' : 'Label')
           : 'Grouped by Label',
         icon: <IconTagAlt/>,
         tooltip: 'Grouped by Label',
       };
       case 'type': return {
         label: 'Group by Tool',
-        selectedLabel:  isFF(FF_DEV_3873) ?
-          (isFF(FF_LSDV_4992) ? 'By Tool' :'Tool')
+        selectedLabel: isFF(FF_DEV_3873) ?
+          (isFF(FF_LSDV_4992) ? 'By Tool' : 'Tool')
           : 'Grouped by Tool',
         icon: <IconCursor/>,
         tooltip: 'Grouped by Tool',
@@ -78,7 +77,7 @@ export const ViewControls: FC<ViewControlsProps> = observer(({
   }, []);
 
   const getOrderingLabels = useCallback((value: OrderingOptions): LabelInfo => {
-    switch(value) {
+    switch (value) {
       case 'date': return {
         label: 'Order by Time',
         selectedLabel: 'By Time',
@@ -91,6 +90,14 @@ export const ViewControls: FC<ViewControlsProps> = observer(({
       };
     }
   }, []);
+
+  const renderOrderingDirectionIcon = (
+    orderingDirection === 'asc' ? (
+      <IconSortUpNew style={{ color: '#898098' }} />
+    ) : (
+      <IconSortDownNew style={{ color: '#898098' }} />
+    )
+  );
 
   return (
     <Block name="view-controls" mod={{ 'collapsed': context.locked, 'FF_LSDV_4992': isFF(FF_LSDV_4992) }}>
@@ -109,21 +116,8 @@ export const ViewControls: FC<ViewControlsProps> = observer(({
             onChange={value => onOrderingChange(value)}
             readableValueForKey={getOrderingLabels}
             allowClickSelected
+            extraIcon={renderOrderingDirectionIcon}
           />
-          {isFF(FF_DEV_3873) && (
-            <Button
-              type="text"
-              icon={
-                orderingDirection === 'asc' ? (
-                  <IconSortUp style={{ color: '#898098' }} />
-                ) : (
-                  <IconSortDown style={{ color: '#898098' }} />
-                )
-              }
-              style={isFF(FF_LSDV_4992) ? {} : { padding: 0, whiteSpace: 'nowrap' }}
-              onClick={() => onOrderingChange(ordering)}
-            />
-          )}
         </Elem>
       )}
       {isFF(FF_LSDV_3025) && (
@@ -172,6 +166,7 @@ interface GroupingProps<T extends string> {
   allowClickSelected?: boolean;
   onChange: (value: T) => void;
   readableValueForKey: (value: T) => LabelInfo;
+  extraIcon?: JSX.Element;
 }
 
 const Grouping = <T extends string>({
@@ -181,6 +176,7 @@ const Grouping = <T extends string>({
   allowClickSelected,
   onChange,
   readableValueForKey,
+  extraIcon,
 }: GroupingProps<T>) => {
 
   const readableValue = useMemo(() => {
@@ -215,24 +211,32 @@ const Grouping = <T extends string>({
         ))}
       </Menu>
     );
-  }, [value, optionsList, readableValue, direction]);
+  }, [value, optionsList, readableValue, direction, onChange]);
 
   // mods are already set in the button from type, so use it only in new UI
   const extraStyles = isFF(FF_DEV_3873) ? { mod: { newUI: true } } : undefined;
   const style = isFF(FF_LSDV_4992) ? {} : {
-    padding: isFF(FF_DEV_3873) ? '0 6px 0 2px': 0,
+    padding: '0',
     whiteSpace: 'nowrap',
   };
 
+  if (isFF(FF_DEV_3873)) {
+    style.padding = '0 12px 0 2px';
+  }
+
   return (
     <Dropdown.Trigger content={dropdownContent} style={{ width: 200 }}>
-      <Button type="text" {...extraStyles} icon={readableValue.icon} style={style} extra={(
-        <DirectionIndicator
-          direction={direction}
-          name={value}
-          value={value}
-          wrap={false}
-        />
+      <Button type="text" data-testid={`grouping-${value}`} {...extraStyles} icon={readableValue.icon} style={style} extra={(
+        isFF(FF_DEV_3873) ? (
+          extraIcon
+        ) : (
+          <DirectionIndicator
+            direction={direction}
+            name={value}
+            value={value}
+            wrap={false}
+          />
+        )
       )}
       tooltip={isFF(FF_LSDV_4992) && readableValue.tooltip || undefined}
       tooltipTheme="dark"

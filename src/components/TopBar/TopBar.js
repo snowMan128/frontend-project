@@ -19,19 +19,24 @@ export const TopBar = observer(({ store }) => {
 
   const isViewAll = annotationStore?.viewingAll === true;
 
+  const toggleViewAll = () => {
+    !isViewAll && entity.saveDraftImmediatelyWithResults({ useToast: true });
+    annotationStore.toggleViewingAllAnnotations();
+  };
+
   return store ? (
     <Block name="topbar" mod={{ newLabelingUI: isFF(FF_DEV_3873) }}>
       {isFF(FF_DEV_3873) ? (
         <Elem name="group">
           <CurrentTask store={store}/>
-          {store.hasInterface('annotations:view-all')  && (
+          {store.hasInterface('annotations:view-all') && (
             <Tooltip title="View all annotations">
               <Button
                 className={'topbar__button'}
                 icon={<IconViewAll />}
                 type="text"
                 aria-label="View All"
-                onClick={() => annotationStore.toggleViewingAllAnnotations()}
+                onClick={toggleViewAll}
                 primary={ isViewAll }
                 style={{
                   height: 36,
