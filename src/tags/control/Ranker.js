@@ -1,244 +1,224 @@
 import React from 'react';
-import arrayMove from 'array-move';
-import { List } from 'antd';
-import { SortableContainer, SortableElement, sortableHandle } from 'react-sortable-hoc';
 import { inject, observer } from 'mobx-react';
 import { types } from 'mobx-state-tree';
 
+import Ranker from '../../components/Ranker/Ranker';
 import Registry from '../../core/Registry';
-import { guidGenerator } from '../../core/Helpers';
-
-const RankerItemModel = types
-  .model({
-    backgroundColor: types.optional(types.string, 'transparent'),
-    value: types.maybeNull(types.string),
-    _value: types.maybeNull(types.string),
-    selected: types.optional(types.boolean, false),
-    idx: types.number,
-  })
-  .actions(self => ({
-    setBG(val) {
-      self.backgroundColor = val;
-    },
-
-    setIdx(idx) {
-      self.idx = idx;
-    },
-
-    setSelected(val) {
-      self.selected = val;
-    },
-  }));
+import Tree from '../../core/Tree';
+import Types from '../../core/Types';
+import { AnnotationMixin } from '../../mixins/AnnotationMixin';
+import { guidGenerator } from '../../utils/unique';
+import Base from './Base';
 
 /**
- * The `Ranker` tag is used to rank the results from models. This tag uses the "prediction" field from a labeling task instead of the "data" field to display content for labeling on the interface. Carefully structure your labeling tasks to work with this tag. See [import pre-annotated data](../guide/predictions.html).
- *
- * Use with the following data types: text.
- *
- * The Ranker tag renders a given list of strings and allows you to drag and reorder them.
- * To see this tag in action:
- * 1. Save the example JSON below as a file called <code>example_ranker_tag.json</code>.
- * 2. Upload it as a task on the Label Studio UI.
- * 3. Set up a project with the given labeling configuration.
- *
+ * The `Ranker` tag is used to rank items in a `List` tag or pick relevant items from a `List`, depending on using nested `Bucket` tags.
+ * In simple case of `List` + `Ranker` tags the first one becomes interactive and saved result is an array of ids in new order.
+ * With `Bucket`s any items from the `List` can be moved to these buckets, and resulting groups will be exported as a dict `{ bucket-name-1: [array of ids in this bucket], ... }`
+ * By default all items will sit in `List` and will not be exported, unless they are moved to a bucket. But with `default="true"` parameter you can specify a bucket where all items will be placed by default, so exported result will always have all items from the list, grouped by buckets.
+ * Columns and items can be styled in `Style` tag by using respective `.htx-ranker-column` and `.htx-ranker-item` classes. Titles of columns are defined in `title` parameter of `Bucket` tag.
  * @example
- * <!--Labeling configuration for ranking predicted text output from a model -->
+ * <!-- Visual appearance can be changed via Style tag with these predefined classnames -->
  * <View>
- *   <Text name="txt-1" value="$text"></Text>
- *   <Ranker name="ranker-1" toName="txt-1" ranked="true" sortedHighlightColor="red"></Ranker>
+ *   <Style>
+ *     .htx-ranker-column { background: cornflowerblue; }
+ *     .htx-ranker-item { background: lightgoldenrodyellow; }
+ *   </Style>
+ *   <List name="results" value="$items" title="Search Results" />
+ *   <Ranker name="rank" toName="results" />
  * </View>
  * @example
- * <!--Example JSON task to use to see the Ranker tag in action -->
- * [{
- *   "data": {
- *     "text": "Some text for the ranker tag"
- *   },
- *   "predictions": [{
- *     "model_version": "1564027355",
- *     "result": [{
- *       "from_name": "ranker-1",
- *       "to_name": "ranker-1",
- *       "type": "ranker",
- *       "value": {
- *         "items": ["abc", "def", "ghk", "more more more", "really long text"],
- *         "weights": [1.00, 0.78, 0.75, 0.74, 0.74],
- *         "selected": [false, false, false, false, false]
- *       }
- *     }],
- *     "score": 1.0
- *   }]
- * }]
+ * <!-- Example data and result for Ranker tag -->
+ * {
+ *   "items": [
+ *     { "id": "blog", "title": "10 tips to write a better function", "body": "There is nothing worse than being left in the lurch when it comes to writing a function!" },
+ *     { "id": "mdn", "title": "Arrow function expressions", "body": "An arrow function expression is a compact alternative to a traditional function" },
+ *     { "id": "wiki", "title": "Arrow (computer science)", "body": "In computer science, arrows or bolts are a type class..." },
+ *   ]
+ * }
+ * {
+ *   "from_name": "rank",
+ *   "to_name": "results",
+ *   "type": "ranker",
+ *   "value": { "ranker": ["mdn", "wiki", "blog"] }
+ * }
+ * @example
+ * <!-- Example of using Buckets with Ranker tag -->
+ * <View>
+ *   <List name="results" value="$items" title="Search Results" />
+ *   <Ranker name="rank" toName="results">
+ *     <Bucket name="best" title="Best results" />
+ *     <Bucket name="ads" title="Paid results" />
+ *   </Ranker>
+ * </View>
+ * @example
+ * <!-- Example result for Ranker tag with Buckets; data is the same -->
+ * {
+ *   "from_name": "rank",
+ *   "to_name": "results",
+ *   "type": "ranker",
+ *   "value": { "ranker": {
+ *     "best": ["mdn"],
+ *     "ads": ["blog"]
+ *   } }
+ * }
  * @name Ranker
- * @meta_title Ranker Tag for Model Ranking
- * @meta_description Customize Label Studio with the Ranker tag to rank the predictions from different models to rank model quality in your machine learning and data science projects.
- * @param {string} name                 - Name of group
- * @param {y|x} [axis=y]               - Whether to use a vertical or horizantal axis direction for ranking
- * @param {x|y} lockAxis                - Lock axis
- * @param {string} sortedHighlightColor - Sorted color in HTML color name
+ * @meta_title Ranker Tag allows you to rank items in a List or, if Buckets are used, pick relevant items from a List
+ * @meta_description Customize Label Studio by sorting results for machine learning and data science projects.
+ * @param {string} name    Name of the element
+ * @param {string} toName  List tag name to connect to
  */
-const TagAttrs = types.model({
-  axis: types.optional(types.enumeration(['x', 'y']), 'y'),
-  lockaxis: types.maybeNull(types.enumeration(['x', 'y'])),
-
-  // elementvalue: types.maybeNull(types.string),
-  elementtag: types.optional(types.string, 'Text'),
-  ranked: types.optional(types.boolean, true),
-  sortable: types.optional(types.boolean, true),
-
-  sortedhighlightcolor: types.maybeNull(types.string),
-
-  name: types.maybeNull(types.string),
-  value: types.maybeNull(types.string),
-});
-
 const Model = types
   .model({
-    id: types.optional(types.identifier, guidGenerator),
     type: 'ranker',
-    update: types.optional(types.number, 1),
+    toname: types.maybeNull(types.string),
 
-    regions: types.array(RankerItemModel),
-    // update: types.optional(types.boolean, false)
+    // @todo allow Views inside: ['bucket', 'view']
+    children: Types.unionArray(['bucket']),
   })
-  .actions(self => ({
-    setUpdate() {
-      self.update = self.update + 1;
+  .volatile(() => ({
+    leftInList: null,
+  }))
+  .views(self => ({
+    get list() {
+      const list = self.annotation.names.get(self.toname);
+
+      return list.type === 'list' ? list : null;
     },
-
-    _addRegion(val, idx) {
-      const reg = RankerItemModel.create({
-        value: val,
-        idx,
-        _value: val,
-      });
-
-      self.regions.push(reg);
+    get buckets() {
+      return Tree.filterChildrenOfType(self, 'BucketModel');
     },
+    /** @returns {string | undefined} */
+    get defaultBucket() {
+      return self.buckets.find(b => b.default)?.name;
+    },
+    get rankOnly() {
+      return !self.buckets.length;
+    },
+    /** @returns {Array<{ id: string, title: string }>} */
+    get columns() {
+      if (!self.list) return [];
+      if (self.rankOnly) return [{ id: self.name, title: self.list.title }];
 
-    moveItems({ oldIndex, newIndex }) {
-      if (oldIndex === newIndex) return;
+      const columns = self.buckets.map(b => ({ id: b.name, title: b.title ?? '' }));
 
-      if (self.sortedhighlightcolor) {
-        self.regions[oldIndex].setBG(self.sortedhighlightcolor);
+      if (!self.defaultBucket) columns.unshift({ id: '_', title: self.list.title });
+
+      return columns;
+    },
+  }))
+  .views(self => ({
+    get dataSource() {
+      const data = self.list?._value;
+      const items = self.list?.items;
+      const ids = Object.keys(items);
+      const columns = self.columns;
+      /** @type {Record<string, string[]>} */
+      const result = self.result?.value.ranker;
+      let itemIds = {};
+
+
+      if (!data) return [];
+      // one array of items sitting in List tag, just reorder them if result is given
+      if (self.rankOnly) {
+        // 
+        itemIds = { [self.name]: result ?? ids };
+      } else if (!result) {
+        itemIds = { [self.defaultBucket ?? '_']: ids };
+      } else {
+        itemIds = { ...result };
+
+        if (!self.defaultBucket) {
+          const selected = Object.values(result).flat();
+          const left = self.leftInList ?? ids.filter(id => !selected.includes(id));
+          // @todo what if data has more items then in selected bucket?
+
+          itemIds['_'] = left;
+        }
       }
 
-      self.regions[oldIndex].setSelected(true);
-
-      if (self._value) self._value = arrayMove(self._value, oldIndex, newIndex);
-
-      self.regions = arrayMove(self.regions, oldIndex, newIndex);
-      self.setUpdate();
+      return { items, columns, itemIds };
+    },
+    get result() {
+      return self.annotation?.results.find(r => r.from_name === self);
+    },
+    // isReadOnly() {
+    //   // tmp fix for infinite recursion in isReadOnly() in ReadOnlyMixin
+    //   // should not affect anything, this object is self-contained
+    //   return true;
+    // },
+  }))
+  .actions(self => ({
+    createResult(data) {
+      self.annotation.createResult({}, { ranker: data }, self, self.list);
     },
 
-    toStateJSON() {
-      return {
-        from_name: self.name,
-        to_name: self.name,
-        value: {
-          // weights: ranked,
-          items: self.regions.map(r => r.value),
-          selected: self.regions.map(r => r.selected),
-        },
-      };
+    updateResult(newData) {
+      if (self.rankOnly) {
+        newData = newData[self.name];
+      } else if (newData._) {
+        self.leftInList = newData._;
+        delete newData._;
+      }
+
+      // check if result exists already, since only one instance of it can exist at a time
+      if (self.result) {
+        self.result.setValue(newData);
+      } else {
+        self.createResult(newData);
+      }
     },
 
-    fromStateJSON(obj) {
-      obj.value.items.forEach((v, idx) => {
-        self._addRegion(v, idx);
-      });
+    // Create result on submit if it doesn't exist
+    beforeSend() {
+      if (self.result || !self.list) return;
 
-      self.setUpdate();
+      const ids = Object.keys(self.list?.items);
+
+      if (self.rankOnly) {
+        self.createResult(ids);
+      } else if (self.defaultBucket) {
+        self.createResult({ [self.defaultBucket]: ids });
+      }
     },
   }));
 
-const RankerModel = types.compose('RankerModel', TagAttrs, Model);
+const RankerModel = types.compose('RankerModel', Base, AnnotationMixin, Model);
 
-const DragHandle = sortableHandle(() => <div className="drag-handle"></div>);
+const HtxRanker = inject('store')(
+  observer(({ item }) => {
+    const data = item.dataSource;
 
-function isMobileDevice() {
-  try {
-    return typeof window.orientation !== 'undefined' || navigator.userAgent.indexOf('IEMobile') !== -1;
-  } catch (e) {
-    return false;
-  }
-}
 
-const SortableText = SortableElement(({ item, value }) => {
-  let classNames;
+    if (!data) return null;
 
-  if (isMobileDevice) {
-    classNames = 'noselect';
-  }
+    return (
+      <Ranker inputData={data} handleChange={item.updateResult} />
+    );
+  }),
+);
 
-  const map = {
-    text: v => <span className={classNames}>{v._value}</span>,
-    image: v => <img src={v._value} alt="" />,
-    audio: v => <audio src={v._value} />,
-  };
-
-  return (
-    <div
-      style={{
-        padding: '1em',
-        userSelect: 'none',
-        display: 'flex',
-        alignItems: 'center',
-        background: value.selected ? item.sortedhighlightcolor : 'transparent',
-      }}
-      className={classNames}
-      onClick={ev => {
-        if (value.selected) {
-          value.setSelected(false);
-          item.setUpdate();
-        } else {
-          value.setSelected(true);
-          item.setUpdate();
-        }
-        ev.preventDefault();
-        return false;
-      }}
-    >
-      <DragHandle />
-      {map[item.elementtag.toLowerCase()](value)}
-    </div>
-  );
+/**
+ * Simple container for items in `Ranker` tag. Can be used to group items in `List` tag.
+ * @name Bucket
+ * @subtag
+ * @param {string} name        Name of the column; used as a key in resulting data
+ * @param {string} title       Title of the column
+ * @param {boolean} [default]  This Bucket will be used to display results from `List` by default; see `Ranker` tag for more details
+ */
+const BucketModel = types.model('BucketModel', {
+  id: types.optional(types.identifier, guidGenerator),
+  type: 'bucket',
+  name: types.string,
+  title: types.maybeNull(types.string),
+  default: types.optional(types.boolean, false),
 });
 
-const SortableList = SortableContainer(({ item, items }) => {
-  return (
-    <List celled>
-      {items.map((value, index) => (
-        <SortableText
-          key={`item-${index}`}
-          index={index}
-          value={value}
-          color={value.backgroundColor}
-          item={item}
-          onClick={() => {}}
-        />
-      ))}
-    </List>
-  );
-});
-
-const HtxRankerView = ({ item }) => {
-  const props = {};
-
-  if (isMobileDevice()) {
-    props['pressDelay'] = 100;
-  } else {
-    props['distance'] = 7;
-  }
-
-  return (
-    <div>
-      <SortableList update={item.update} item={item} items={item.regions} onSortEnd={item.moveItems} {...props} />
-    </div>
-  );
-};
-
-const HtxRanker = inject('store')(observer(HtxRankerView));
+const HtxBucket = inject('store')(observer(({ item }) => {
+  return <h1>{item.name}</h1>;
+}));
 
 Registry.addTag('ranker', RankerModel, HtxRanker);
+Registry.addTag('bucket', BucketModel, HtxBucket);
+Registry.addObjectType(RankerModel);
 
-export { RankerModel, HtxRanker };
+export { HtxRanker, RankerModel };
